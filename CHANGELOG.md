@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1
+
+- New toolbar icon.
+- Fixed an error message that could appear when opening a board.
+
 ## 0.1.0
 
 First release.

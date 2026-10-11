@@ -180,14 +180,21 @@ function rememberSpot(wheelId: string, rect: Rect): void {
 /** Removes elements, unlocking first where needed. */
 async function removeElements(elements: { id: string; locked: boolean }[]): Promise<void> {
     if (elements.length === 0) return;
-    const locked = elements.filter((el) => el.locked);
+    // Undo, redo or another client may already have removed some of them: act only on what is still there.
+    const { drawdyElements } = unwrap(
+        await call({ type: "command:scene:get-drawdy-elements", req: { properties: ["x"], drawdyElementIds: elements.map((el) => el.id) } })
+    );
+    const present = new Set(drawdyElements.map((el) => el.id));
+    const existing = elements.filter((el) => present.has(el.id));
+    if (existing.length === 0) return;
+    const locked = existing.filter((el) => el.locked);
     if (locked.length > 0) {
         await call({
             type: "command:scene:update-drawdy-elements",
             req: { updates: locked.map((el) => ({ drawdyElementId: el.id, properties: { locked: false } })) },
         });
     }
-    const ids = elements.map((el) => el.id);
+    const ids = existing.map((el) => el.id);
     ids.forEach((id) => ownRemovals.add(id));
     await call({ type: "command:scene:remove-drawdy-elements", req: { drawdyElementIds: ids } });
 }
@@ -662,9 +669,13 @@ export async function onDragEnd(): Promise<void> {
     const hidden = draggedDiscs;
     draggedDiscs = [];
     if (hidden.length === 0) return;
-    const { rects } = unwrap(await call({ type: "command:scene:element-rects", req: { drawdyElementIds: hidden } }));
+    // get-drawdy-elements skips ids that no longer exist (a disc removed during the drag).
+    const { drawdyElements } = unwrap(
+        await call({ type: "command:scene:get-drawdy-elements", req: { properties: ["x", "y", "width", "height"], drawdyElementIds: hidden } })
+    );
     for (const id of hidden) {
-        const rect = rects.find((r) => r.drawdyElementId === id)?.rect ?? null;
+        const found = drawdyElements.find((el) => el.id === id);
+        const rect = found ? rectOf(found) : null;
         if (rect) lastRect.set(id, rect);
         await releaseHub(id, rect, lookOfDisc(id));
     }

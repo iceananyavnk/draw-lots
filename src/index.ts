@@ -4,6 +4,7 @@ import { UnauthorizedError, call, initHost, setStyling, token } from "./host";
 import { discForHubElement } from "./hubs";
 import { redrawHubs } from "./hubs";
 import { error, warn } from "./log";
+import { RAIL_ICON_SVG } from "./rail-icon";
 import { WEBVIEW_ID, initPanel, onPanelMessage, onThemeChanged, showNotice, togglePanel } from "./panel";
 import {
     discsAppeared,
@@ -23,9 +24,10 @@ const ACTION_BUTTON_ID = "draw-lots:action-button";
 const NOTICE_ID = "draw-lots:notice";
 const DENIED_MESSAGE = "Draw Lots needs access to the board. Re-enable it in the extension permissions.";
 
-const ACTION_BUTTON_SVG = `<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="13" r="8.5"/><path d="M12 13V4.5M12 13l7.4 4.25M12 13l-7.4 4.25"/><circle cx="12" cy="13" r="2" fill="currentColor"/><path d="M10.5 1.5h3L12 4z" fill="currentColor"/></svg>`;
 
 let sceneReady: Promise<boolean> | null = null;
+
+let noticeSeq = 0;
 
 async function notice(text: string): Promise<void> {
     const size = await call({ type: "command:dom:window-size" });
@@ -58,7 +60,11 @@ async function notice(text: string): Promise<void> {
             },
         },
     });
-    setTimeout(() => void call({ type: "command:dom:remove-floating-element", req: { domId: NOTICE_ID } }), 4000);
+    // Only the latest notice removes it, so a replaced notice is never removed twice.
+    const shown = ++noticeSeq;
+    setTimeout(() => {
+        if (shown === noticeSeq) void call({ type: "command:dom:remove-floating-element", req: { domId: NOTICE_ID } });
+    }, 4000);
 }
 
 async function reportError(err: unknown): Promise<void> {
@@ -113,7 +119,7 @@ export const activate: DriverModule["activate"] = async (ctx) => {
 
     const button = await call({
         type: "command:dom:create-action-button",
-        req: { domElementId: ACTION_BUTTON_ID, svg: ACTION_BUTTON_SVG },
+        req: { domElementId: ACTION_BUTTON_ID, svg: RAIL_ICON_SVG },
     });
     if (button.res.error) {
         warn("action button unavailable", button.res.error);

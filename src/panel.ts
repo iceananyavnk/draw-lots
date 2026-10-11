@@ -95,14 +95,24 @@ function themeCss(): string {
     return `color-scheme: ${theme};--dl-switch-off: ${SWITCH_OFF[theme]};${vars}`;
 }
 
+/** True while the panel document is running; nothing is posted to a panel that is not open. */
+let panelAlive = false;
+
 function post(message: unknown): void {
-    void call({ type: "command:webview:post-message", req: { webviewDomId: WEBVIEW_ID, message } });
+    if (!panelAlive) return;
+    void call({ type: "command:webview:post-message", req: { webviewDomId: WEBVIEW_ID, message } }).then((res) => {
+        if (res.res.value?.posted === false) panelAlive = false;
+    });
 }
 
-/** Opens the panel, or hides it when it is showing. */
+/**
+ * Opens the panel, or hides it when it is open. Whether it is open is probed with a
+ * post-message, which answers posted: false for a missing webview instead of failing.
+ */
 export async function togglePanel(): Promise<void> {
-    const rect = await call({ type: "command:dom:element-rect", req: { elementId: WEBVIEW_ID } });
-    if (rect.res.value && rect.res.value.width > 0 && rect.res.value.height > 0) {
+    const probe = await call({ type: "command:webview:post-message", req: { webviewDomId: WEBVIEW_ID, message: { type: "ping" } } });
+    if (probe.res.value?.posted) {
+        panelAlive = false;
         await call({ type: "command:webview:hide", req: { webviewDomId: WEBVIEW_ID } });
         return;
     }
@@ -342,6 +352,7 @@ export async function onPanelMessage(raw: unknown): Promise<void> {
     const message = raw as PanelMessage;
     switch (message.type) {
         case "ready":
+            panelAlive = true;
             sentImages = new Set();
             onThemeChanged();
             if (typeof message.reducedMotion === "boolean") setReducedMotion(message.reducedMotion);

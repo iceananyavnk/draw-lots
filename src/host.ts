@@ -8,6 +8,8 @@ import type {
 
 type HostRequest = DistributiveOmit<DriverCommandRequest, "driverId" | "requestId">;
 
+import { warn } from "./log";
+
 let issue: DriverCommandIssuer;
 let driverId = "";
 let requestSeq = 0;
@@ -31,12 +33,17 @@ export function setStyling(next: ModuleStyling): void {
     styling = next;
 }
 
-/** Issues a command with driverId and a fresh requestId filled in. */
-export function call<R extends HostRequest>(
+/**
+ * Issues a command with driverId and a fresh requestId filled in. Any failed command is
+ * reported as one warning naming the command, so an unexpected host error can be traced.
+ */
+export async function call<R extends HostRequest>(
     r: R
 ): Promise<DriverCommandResponseFor<Extract<DriverCommandRequest, { type: R["type"] }>>> {
     const full = { ...r, driverId, requestId: String(requestSeq++) } as unknown as DriverCommandRequest;
-    return issue(full) as never;
+    const response = (await issue(full)) as { res: { error?: { type: string; message?: string } } };
+    if (response.res.error) warn("command failed", { command: r.type, error: response.res.error.type, message: response.res.error.message });
+    return response as never;
 }
 
 export class UnauthorizedError extends Error {}

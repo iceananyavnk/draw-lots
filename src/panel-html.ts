@@ -65,7 +65,22 @@ svg { display: block; }
 .list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; overflow-y: auto; flex: 1; min-height: 80px; }
 .list li { display: flex; align-items: center; gap: var(--dd-space-6, 6px); padding: var(--dd-space-4, 4px); border-radius: var(--dd-radius-md, 6px); }
 .list li:hover { background: var(--dd-interaction-hover, rgba(0,0,0,.04)); }
-.mark { width: 16px; height: 16px; flex: none; color: var(--dd-text-tertiary, rgba(0,0,0,.5)); }
+.mark { display: inline-block; width: 14px; height: 14px; margin-left: var(--dd-space-4, 4px); vertical-align: -2px; color: var(--dd-text-tertiary, rgba(0,0,0,.5)); }
+.list li { flex-wrap: wrap; position: relative; }
+.slot { position: relative; width: 32px; height: 32px; flex: none; border-radius: 50%; border: 1px dashed var(--dd-text-tertiary, rgba(0,0,0,.5)); background: transparent;
+    color: var(--dd-text-tertiary, rgba(0,0,0,.5)); display: grid; place-items: center; cursor: pointer; padding: 0; }
+.slot:hover { border-color: var(--dd-text-primary, rgba(0,0,0,.95)); color: var(--dd-text-primary, rgba(0,0,0,.95)); background: var(--dd-interaction-hover, rgba(0,0,0,.04)); }
+.slot svg { width: 16px; height: 16px; }
+.slot.has { border: 0; overflow: visible; }
+.slot.has img { width: 32px; height: 32px; border-radius: 50%; object-fit: cover; display: block; }
+.slot.busy { opacity: .5; cursor: progress; }
+li.picked .slot { opacity: .5; }
+.rowerr { flex-basis: 100%; margin: 0; padding-left: 38px; color: var(--dd-status-danger, #e5484d); font-size: var(--dd-type-caption-size, 11px); line-height: var(--dd-type-caption-line, 16px); }
+.menu { position: absolute; z-index: 5; display: flex; flex-direction: column; padding: var(--dd-space-4, 4px); min-width: 140px; border-radius: var(--dd-radius-lg, 8px);
+    background: var(--dd-surface-elevated, #fff); border: 1px solid var(--dd-border-subtle, rgba(0,0,0,.1)); box-shadow: 0 4px 16px rgba(0,0,0,.12); }
+.menu button { border: 0; background: none; text-align: left; padding: var(--dd-space-6, 6px) var(--dd-space-8, 8px); border-radius: var(--dd-radius-sm, 4px); cursor: pointer;
+    font-size: var(--dd-type-label-size, 12px); line-height: var(--dd-type-label-line, 16px); }
+.menu button:hover, .menu button:focus-visible { background: var(--dd-interaction-hover, rgba(0,0,0,.04)); }
 .nm { flex: 1; min-width: 0; overflow-wrap: anywhere; text-align: left; border: 0; background: transparent; padding: var(--dd-space-4, 4px) var(--dd-space-6, 6px);
     border-radius: var(--dd-radius-sm, 4px); cursor: text; }
 .nm:hover { box-shadow: inset 0 0 0 1px var(--dd-border-subtle, rgba(0,0,0,.1)); }
@@ -120,6 +135,12 @@ li.picked .nm { color: var(--dd-text-tertiary, rgba(0,0,0,.5)); }
         <button class="switch" id="removePicked" role="switch" aria-checked="true"><span class="track"><span class="thumb"></span></span>Remove picked names</button>
     </div>
     <ul class="list" id="list" aria-label="Items"></ul>
+    <p class="hint" id="imageHint" hidden>Images show on the wheel with 10 items or fewer.</p>
+    <input type="file" id="file" accept="image/*" hidden />
+    <div class="menu" id="imageMenu" role="menu" hidden>
+        <button role="menuitem" id="menuReplace">Replace image</button>
+        <button role="menuitem" id="menuRemove">Remove image</button>
+    </div>
     <div class="listfoot" id="listFoot">
         <button class="textbtn" id="resetPicked" hidden>Reset picks</button>
         <span class="vdivider" id="resetDivider" aria-hidden="true" hidden></span>
@@ -135,8 +156,14 @@ li.picked .nm { color: var(--dd-text-tertiary, rgba(0,0,0,.5)); }
     var api = acquireDrawdyApi();
     var X_ICON = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M4.6 4.4C7 6.6 9.2 9 11.5 11.6M11.3 4.5C9 6.7 6.8 9.1 4.5 11.5"/></svg>';
     var CHECK_ICON = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.3 8.6C4.5 9.6 5.5 10.7 6.4 11.9 8.1 9 10.3 6.2 12.9 3.8"/></svg>';
+    // The prototype's hand-drawn image-plus icon.
+    var IMAGE_ICON = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8.4 2.7C6.6 2.5 4.6 2.6 3.6 2.8 2.8 3 2.6 3.6 2.6 4.6 2.5 6.8 2.5 9.6 2.7 11.6 2.8 12.8 3.4 13.3 4.4 13.4 6.6 13.6 9.6 13.5 11.6 13.3 12.8 13.2 13.3 12.6 13.4 11.6 13.5 10.6 13.5 9.6 13.4 8.6"/><path d="M5 6.2c.1-.7.6-1.1 1.2-1 .6.1 1 .6.9 1.2-.1.6-.6 1-1.2.9-.6 0-1-.5-.9-1.1z"/><path d="M3 11.8C4.2 10.6 5.3 9.4 6.4 8.6 7.2 9.4 7.9 10.2 8.5 10.8 9.2 10.1 9.8 9.5 10.5 9.1 11.4 9.9 12.4 10.9 13.1 11.7"/><path d="M12.3 1.4C12.2 2.7 12.3 4 12.4 5.3M10.4 3.4C11.6 3.3 12.9 3.3 14.3 3.4"/></svg>';
     var $ = function (id) { return document.getElementById(id); };
     var input = $("nameInput"), list = $("list");
+    /** Image data URLs by key, sent once by the driver. */
+    var images = {};
+    /** Row messages ("Couldn't use this image.") and rows with an image being processed, by item id. */
+    var rowErrors = {}, processing = {};
 
     var state = null;
     var pending = null;
@@ -182,12 +209,34 @@ li.picked .nm { color: var(--dd-text-tertiary, rgba(0,0,0,.5)); }
             var li = document.createElement("li");
             var isPicked = edit && picked[it.id];
             if (isPicked) li.className = "picked";
-            var mark = document.createElement("span");
-            mark.className = "mark";
-            if (isPicked) { mark.innerHTML = CHECK_ICON; mark.title = "Picked"; }
+            var slot = document.createElement("button");
+            var src = it.imageKey ? images[it.imageKey] : null;
+            slot.className = "slot" + (src ? " has" : "") + (processing[it.id] ? " busy" : "");
+            slot.setAttribute("data-key", "slot-" + it.id);
+            if (src) {
+                var thumb = document.createElement("img");
+                thumb.src = src;
+                thumb.alt = "";
+                slot.appendChild(thumb);
+                slot.title = "Image options";
+                slot.setAttribute("aria-label", "Image options for " + it.name);
+                slot.setAttribute("aria-haspopup", "menu");
+                slot.onclick = function () { openMenu(slot, it); };
+            } else {
+                slot.innerHTML = IMAGE_ICON;
+                slot.title = "Add image";
+                slot.setAttribute("aria-label", "Add image for " + it.name);
+                slot.onclick = function () { pickImage(it.id); };
+            }
             var nm = document.createElement("button");
             nm.className = "nm";
             nm.textContent = it.name;
+            if (isPicked) {
+                var mark = document.createElement("span");
+                mark.className = "mark";
+                mark.innerHTML = CHECK_ICON;
+                nm.appendChild(mark);
+            }
             nm.title = "Click to edit";
             nm.setAttribute("aria-label", "Edit " + it.name + (isPicked ? ", picked" : ""));
             nm.setAttribute("data-key", "nm-" + it.id);
@@ -199,7 +248,14 @@ li.picked .nm { color: var(--dd-text-tertiary, rgba(0,0,0,.5)); }
             x.setAttribute("aria-label", "Remove " + it.name);
             x.setAttribute("data-key", "x-" + it.id);
             x.onclick = function () { removeItem(it.id); };
-            li.appendChild(mark); li.appendChild(nm); li.appendChild(x);
+            li.appendChild(slot); li.appendChild(nm); li.appendChild(x);
+            if (rowErrors[it.id]) {
+                var err = document.createElement("p");
+                err.className = "rowerr";
+                err.setAttribute("role", "alert");
+                err.textContent = rowErrors[it.id];
+                li.appendChild(err);
+            }
             list.appendChild(li);
         });
         if (items.length === 0) {
@@ -209,6 +265,8 @@ li.picked .nm { color: var(--dd-text-tertiary, rgba(0,0,0,.5)); }
             list.appendChild(empty);
         }
         $("listFoot").hidden = items.length === 0;
+        var anyImage = items.some(function (it) { return !!it.imageKey; });
+        $("imageHint").hidden = !(anyImage && state.visibleCount > state.imageLimit);
 
         $("status").hidden = !edit;
         $("status").classList.toggle("busy", state.status === "pending");
@@ -220,6 +278,136 @@ li.picked .nm { color: var(--dd-text-tertiary, rgba(0,0,0,.5)); }
         $("notice").textContent = state.notice || "";
         restoreFocus(key);
     }
+
+    // ---- Images: decode, centre-crop, resize and encode in the panel, with browser APIs only. ----
+    var IMAGE_SIZE = 128, TARGET_BYTES = 12 * 1024, MAX_FILE_BYTES = 10 * 1024 * 1024, MAX_DATA_URL = 64000;
+    var QUALITIES = [0.85, 0.78, 0.7, 0.62, 0.54, 0.46];
+    var pickTarget = null;
+
+    function pickImage(id) {
+        pickTarget = id;
+        $("file").value = "";
+        $("file").click();
+    }
+
+    function toBlob(canvas, type, quality) {
+        return new Promise(function (resolve) { canvas.toBlob(resolve, type, quality); });
+    }
+
+    function readDataUrl(blob) {
+        return new Promise(function (resolve, reject) {
+            var reader = new FileReader();
+            reader.onload = function () { resolve(String(reader.result)); };
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+        });
+    }
+
+    /** Encodes at the highest quality that fits TARGET_BYTES; WebP where the browser encodes it, else JPEG. */
+    function encode(canvas) {
+        function tryType(type, i, smallest) {
+            if (i >= QUALITIES.length) return Promise.resolve(smallest);
+            return toBlob(canvas, type, QUALITIES[i]).then(function (blob) {
+                if (!blob || blob.type !== type) return null;
+                if (blob.size <= TARGET_BYTES) return blob;
+                return tryType(type, i + 1, !smallest || blob.size < smallest.size ? blob : smallest);
+            });
+        }
+        return tryType("image/webp", 0, null).then(function (blob) { return blob || tryType("image/jpeg", 0, null); });
+    }
+
+    function processImage(file) {
+        if (!file || file.size > MAX_FILE_BYTES) return Promise.reject(new Error("too large"));
+        return createImageBitmap(file).then(function (full) {
+            var side = Math.min(full.width, full.height);
+            if (!side) throw new Error("empty");
+            var sx = (full.width - side) / 2, sy = (full.height - side) / 2;
+            // Let the browser resample the crop to 128 px with high quality where supported.
+            return createImageBitmap(full, sx, sy, side, side, { resizeWidth: IMAGE_SIZE, resizeHeight: IMAGE_SIZE, resizeQuality: "high" })
+                .catch(function () { return null; })
+                .then(function (small) {
+                    var canvas = document.createElement("canvas");
+                    canvas.width = canvas.height = IMAGE_SIZE;
+                    var g = canvas.getContext("2d");
+                    g.fillStyle = "#FFFFFF";
+                    g.fillRect(0, 0, IMAGE_SIZE, IMAGE_SIZE);
+                    g.imageSmoothingQuality = "high";
+                    if (small) g.drawImage(small, 0, 0);
+                    else g.drawImage(full, sx, sy, side, side, 0, 0, IMAGE_SIZE, IMAGE_SIZE);
+                    if (small && small.close) small.close();
+                    if (full.close) full.close();
+                    return encode(canvas);
+                });
+        }).then(function (blob) {
+            if (!blob) throw new Error("encode");
+            return readDataUrl(blob);
+        }).then(function (url) {
+            if (url.length > MAX_DATA_URL) throw new Error("too big after encoding");
+            return url;
+        });
+    }
+
+    $("file").addEventListener("change", function () {
+        var id = pickTarget, file = $("file").files && $("file").files[0];
+        pickTarget = null;
+        if (!id || !file) return;
+        delete rowErrors[id];
+        processing[id] = true;
+        render();
+        processImage(file).then(function (url) {
+            delete processing[id];
+            send({ type: "setImage", id: id, image: url });
+            render();
+            restoreFocus("slot-" + id);
+        }, function () {
+            delete processing[id];
+            rowErrors[id] = "Couldn\u2019t use this image.";
+            render();
+            restoreFocus("slot-" + id);
+        });
+    });
+
+    var menuFor = null;
+
+    function openMenu(slot, it) {
+        var menu = $("imageMenu");
+        menuFor = { id: it.id, slot: "slot-" + it.id };
+        var box = slot.getBoundingClientRect();
+        menu.style.left = box.left + "px";
+        menu.style.top = box.bottom + 4 + "px";
+        menu.hidden = false;
+        $("menuReplace").focus();
+    }
+
+    function closeMenu(restore) {
+        var menu = $("imageMenu");
+        if (menu.hidden) return;
+        menu.hidden = true;
+        var key = menuFor && menuFor.slot;
+        if (restore && key) restoreFocus(key);
+    }
+
+    $("menuReplace").addEventListener("click", function () {
+        var id = menuFor && menuFor.id;
+        closeMenu(true);
+        if (id) pickImage(id);
+    });
+    $("menuRemove").addEventListener("click", function () {
+        var id = menuFor && menuFor.id;
+        closeMenu(false);
+        if (id) { delete rowErrors[id]; send({ type: "removeImage", id: id }); setTimeout(function () { restoreFocus("slot-" + id); }, 0); }
+    });
+    $("imageMenu").addEventListener("keydown", function (e) {
+        var items = [$("menuReplace"), $("menuRemove")], i = items.indexOf(document.activeElement);
+        if (e.key === "Escape") { e.preventDefault(); closeMenu(true); }
+        else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+            e.preventDefault();
+            items[(i + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length].focus();
+        } else if (e.key === "Tab") { closeMenu(false); }
+    });
+    document.addEventListener("pointerdown", function (e) {
+        if (!$("imageMenu").hidden && !$("imageMenu").contains(e.target)) closeMenu(false);
+    });
 
     function removeItem(id) {
         var items = state.items, i = items.findIndex(function (it) { return it.id === id; });
@@ -395,7 +583,14 @@ li.picked .nm { color: var(--dd-text-tertiary, rgba(0,0,0,.5)); }
         if (msg.type === "soundStored") { try { window.localStorage.setItem(STORED_HINT, "1"); } catch (e) {} return; }
         if (msg.type === "theme") {
             $("theme").textContent = ":root{" + msg.css + "}";
+        } else if (msg.type === "images") {
+            for (var key in msg.images) images[key] = msg.images[key];
         } else if (msg.type === "state") {
+            // A row whose image changed (here or on another client) drops its old image message.
+            (msg.state.items || []).forEach(function (it) {
+                var before = state && state.items.find(function (o) { return o.id === it.id; });
+                if (before && before.imageKey !== it.imageKey) delete rowErrors[it.id];
+            });
             // A list update that arrives while a row is being edited waits for the edit to end.
             if (editing) { pending = msg.state; return; }
             state = msg.state;

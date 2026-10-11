@@ -33,7 +33,18 @@ export const META_KEY = "drawLots";
 export type WheelItem = {
     id: string;
     name: string;
+    /** A small square image as a data URL (WebP or JPEG), encoded by the panel. */
+    image?: string;
 };
+
+/** Images are drawn on the wheel only with this many visible items or fewer. */
+export const IMAGE_ITEM_LIMIT = 10;
+/** Upper bound for one stored image data URL; the panel targets about 16 000 characters (12 KB). */
+export const MAX_IMAGE_CHARS = 64_000;
+
+export function isImageDataUrl(value: unknown): value is string {
+    return typeof value === "string" && value.length <= MAX_IMAGE_CHARS && /^data:image\/(webp|jpeg|png);base64,[A-Za-z0-9+/=]+$/.test(value);
+}
 
 export type DiscMeta = {
     role: "disc";
@@ -67,8 +78,10 @@ function normalizeMeta(raw: Record<string, unknown>): DiscMeta | null {
     const items: WheelItem[] = raw.items.flatMap((it, i) => {
         if (typeof it === "string") return [{ id: `item-${i}`, name: it }];
         if (typeof it === "object" && it !== null && typeof (it as WheelItem).name === "string") {
-            const id = (it as WheelItem).id;
-            return [{ id: typeof id === "string" && id ? id : `item-${i}`, name: (it as WheelItem).name }];
+            const { id, name, image } = it as WheelItem;
+            const item: WheelItem = { id: typeof id === "string" && id ? id : `item-${i}`, name };
+            if (isImageDataUrl(image)) item.image = image;
+            return [item];
         }
         return [];
     });

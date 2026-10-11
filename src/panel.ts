@@ -1,7 +1,8 @@
 import { UnauthorizedError, call, generateId, styling, tokens } from "./host";
 import { setReducedMotion } from "./hubs";
 import { error, log } from "./log";
-import { MAX_ITEMS, MIN_ITEMS, type DiscMeta, type WheelItem } from "./model";
+import { seedFrom } from "./hand";
+import { IMAGE_ITEM_LIMIT, MAX_ITEMS, MIN_ITEMS, isImageDataUrl, visibleItems, type DiscMeta, type WheelItem } from "./model";
 import { PANEL_HTML } from "./panel-html";
 import {
     addWheel,
@@ -23,9 +24,15 @@ const MAX_NAME_LENGTH = 60;
 
 type Mode = "draft" | "edit";
 
+/** A list row as the panel sees it; the image itself is sent once, by key. */
+type PanelItem = { id: string; name: string; imageKey: string | null };
+
 type PanelState = {
     mode: Mode;
-    items: WheelItem[];
+    items: PanelItem[];
+    /** Items the wheel draws; the panel notes that images only show with IMAGE_ITEM_LIMIT or fewer. */
+    visibleCount: number;
+    imageLimit: number;
     picked: string[];
     removePicked: boolean;
     status: "idle" | "pending";
@@ -43,7 +50,9 @@ type PanelMessage =
     | { type: "clear" }
     | { type: "setRemovePicked"; value: boolean }
     | { type: "resetPicked" }
-    | { type: "addWheel" };
+    | { type: "addWheel" }
+    | { type: "setImage"; id: string; image: string }
+    | { type: "removeImage"; id: string };
 
 /** A change waiting to be written to the target wheel. */
 type Change = (meta: DiscMeta) => DiscMeta;
@@ -121,11 +130,40 @@ function currentItems(): WheelItem[] {
     return mode === "draft" ? draft : working ?? targetMeta?.items ?? [];
 }
 
+/** Image keys this panel instance already has; reset when a new panel document starts. */
+let sentImages = new Set<string>();
+
+const imageKey = (image: string) => `${image.length.toString(36)}-${(seedFrom(image) >>> 0).toString(36)}`;
+
+/** Sends the images the panel does not have yet, then the rows refer to them by key. */
+function panelItems(items: WheelItem[]): PanelItem[] {
+    const fresh: Record<string, string> = {};
+    const rows = items.map((it) => {
+        if (!it.image) return { id: it.id, name: it.name, imageKey: null };
+        const key = imageKey(it.image);
+        if (!sentImages.has(key)) {
+            fresh[key] = it.image;
+            sentImages.add(key);
+        }
+        return { id: it.id, name: it.name, imageKey: key };
+    });
+    if (Object.keys(fresh).length > 0) post({ type: "images", images: fresh });
+    return rows;
+}
+
+function visibleCount(items: WheelItem[]): number {
+    if (mode !== "edit" || !targetMeta) return items.length;
+    return visibleItems({ ...targetMeta, items }).length;
+}
+
 function pushState(): void {
     const meta = mode === "edit" ? targetMeta : null;
+    const items = currentItems();
     const state: PanelState = {
         mode,
-        items: currentItems(),
+        items: panelItems(items),
+        visibleCount: visibleCount(items),
+        imageLimit: IMAGE_ITEM_LIMIT,
         picked: meta?.picked ?? [],
         removePicked: pendingRemovePicked() ?? meta?.removePicked ?? true,
         status: working !== null || queued.length > 0 || flushing ? "pending" : "idle",
@@ -309,6 +347,7 @@ export async function onPanelMessage(raw: unknown): Promise<void> {
     const message = raw as PanelMessage;
     switch (message.type) {
         case "ready":
+            sentImages = new Set();
             onThemeChanged();
             if (typeof message.reducedMotion === "boolean") setReducedMotion(message.reducedMotion);
             if (muted === null && message.soundStored) await loadMuted().catch(() => undefined);
@@ -333,6 +372,20 @@ export async function onPanelMessage(raw: unknown): Promise<void> {
         }
         case "remove":
             applyListChange((items) => items.filter((it) => it.id !== message.id));
+            return;
+        case "setImage":
+            // An image change is a list edit: same debounce, same disc swap.
+            if (!isImageDataUrl(message.image)) return;
+            applyListChange((items) => items.map((it) => (it.id === message.id ? { ...it, image: message.image } : it)));
+            return;
+        case "removeImage":
+            applyListChange((items) =>
+                items.map((it) => {
+                    if (it.id !== message.id) return it;
+                    const { image: _removed, ...rest } = it;
+                    return rest;
+                })
+            );
             return;
         case "clear":
             applyListChange(() => []);

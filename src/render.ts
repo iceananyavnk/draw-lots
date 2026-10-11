@@ -1,4 +1,5 @@
 import { loadFonts } from "./fonts";
+import { decodeBase64 } from "./base64";
 import { HandWheel, traceHandCircle, traceNotch } from "./hand";
 import { token } from "./host";
 import { fitLabel, measureLabel, renderLabel, truncateLabel, type TextStep } from "./labels";
@@ -13,6 +14,7 @@ import {
     RESULT_HEIGHT,
     RIM_RADIUS,
     WHEEL_SIZE,
+    IMAGE_ITEM_LIMIT,
     normalizeDeg,
     visibleItems,
     visibleWinnerIndex,
@@ -64,6 +66,39 @@ const HUB_LABEL: TextStep = { size: 15, weight: 700 };
 const PILL_LABEL_STEP: TextStep = { size: 13, weight: 500 };
 const PILL_NAME_STEP: TextStep = { size: 15, weight: 600 };
 const PILL_MAX_WIDTH = 260;
+/** Item images, as in the prototype: centred at 0.66 of the rim radius, with a white ring and an ink ring. */
+const IMAGE_RADIUS_FACTOR = 0.66;
+const IMAGE_MAX_RADIUS = 26;
+const IMAGE_MIN_RADIUS = 14;
+const IMAGE_RING = 2.5;
+const IMAGE_RING_STROKE = 2;
+const IMAGE_RING_WOBBLE = 0.7;
+/** Ring seed per wedge: wheel seed + 31 * (index + 1), as in the prototype. */
+const IMAGE_RING_SEED_STEP = 31;
+const IMAGE_CACHE_SIZE = 64;
+
+const bitmaps = new Map<string, Promise<ImageBitmap | null>>();
+
+/** Decodes an image data URL once; later renders reuse the bitmap. Undecodable images give null. */
+function bitmapFor(dataUrl: string): Promise<ImageBitmap | null> {
+    let bitmap = bitmaps.get(dataUrl);
+    if (!bitmap) {
+        const comma = dataUrl.indexOf(",");
+        const type = dataUrl.slice(5, dataUrl.indexOf(";"));
+        bitmap = createImageBitmap(new Blob([decodeBase64(dataUrl.slice(comma + 1)) as Uint8Array<ArrayBuffer>], { type })).catch(() => null);
+        bitmaps.set(dataUrl, bitmap);
+        if (bitmaps.size > IMAGE_CACHE_SIZE) bitmaps.delete(bitmaps.keys().next().value as string);
+    }
+    return bitmap;
+}
+
+/** Radius of the item images on a wheel of `count` visible items, or 0 when images are not drawn. */
+function imageRadius(count: number): number {
+    if (count > IMAGE_ITEM_LIMIT || count < 1) return 0;
+    const seg = (2 * Math.PI) / count;
+    const r = Math.min(IMAGE_MAX_RADIUS, Math.sin(seg / 2) * RIM_RADIUS * IMAGE_RADIUS_FACTOR * 0.82, RIM_RADIUS * 0.2);
+    return r >= IMAGE_MIN_RADIUS ? r : 0;
+}
 
 export function wedgeColors(count: number): string[] {
     const colors = Array.from({ length: count }, (_, i) => WEDGE_COLORS[i % WEDGE_COLORS.length]);
@@ -126,6 +161,9 @@ export async function renderDisc(input: DiscRenderInput): Promise<{ blob: Blob; 
     const maxWidth = RIM_RADIUS - HUB_RADIUS - TEXT_PADDING;
     const maxThickness = 0.6 * 2 * midRadius * Math.sin(Math.min(seg, Math.PI) / 2);
     const colors = wedgeColors(count);
+    const imgR = imageRadius(count);
+    const images = await Promise.all(items.map((it) => (imgR > 0 && it.image ? bitmapFor(it.image) : Promise.resolve(null))));
+    const pillImage = hasResult && items[winnerIndex].image ? await bitmapFor(items[winnerIndex].image!) : null;
 
     ctx.save();
     ctx.translate(WHEEL_SIZE / 2, WHEEL_SIZE / 2);
@@ -147,6 +185,11 @@ export async function renderDisc(input: DiscRenderInput): Promise<{ blob: Blob; 
         ctx.fillStyle = dimmed ? mixWithWhite(colors[i], DIMMED_ALPHA) : colors[i];
         ctx.fill();
 
+        const image = images[i];
+        if (image) {
+            drawItemImage(ctx, image, count === 1 ? 0 : a0 + seg / 2, imgR, input.seed + IMAGE_RING_SEED_STEP * (i + 1), dimmed);
+            continue;
+        }
         const layout = fitLabel(ctx, items[i].name, WEDGE_STEPS, maxWidth, maxThickness);
         ctx.save();
         // Canvas angles start at 3 o'clock; a single item's label sits on the radius toward 12 o'clock.
@@ -192,10 +235,44 @@ export async function renderDisc(input: DiscRenderInput): Promise<{ blob: Blob; 
     drawHub(ctx, input.seed, hasResult ? "full" : "plain");
     ctx.restore();
 
-    if (hasResult) drawPill(ctx, items[winnerIndex].name);
+    if (hasResult) drawPill(ctx, items[winnerIndex].name, pillImage);
 
     const blob = await canvas.convertToBlob({ type: "image/png" });
     return { blob, width: WHEEL_SIZE, height };
+}
+
+/**
+ * Draws an item image in its wedge at angle `mid` (clockwise from 12 o'clock): a white
+ * hand-drawn ring, the image clipped to a circle, then the ink ring. The image's top faces
+ * the rim. Dimmed images are drawn at 35 % over the white ring, so they stay opaque.
+ */
+function drawItemImage(ctx: Ctx, image: ImageBitmap, mid: number, imgR: number, seed: number, dimmed: boolean): void {
+    ctx.save();
+    ctx.rotate(mid);
+    ctx.translate(0, -RIM_RADIUS * IMAGE_RADIUS_FACTOR);
+    traceHandCircle(ctx, imgR + IMAGE_RING, seed, IMAGE_RING_WOBBLE);
+    ctx.fillStyle = "#FFFFFF";
+    ctx.fill();
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(0, 0, imgR, 0, Math.PI * 2);
+    ctx.clip();
+    ctx.globalAlpha = dimmed ? DIMMED_ALPHA : 1;
+    drawCover(ctx, image, -imgR, -imgR, imgR * 2);
+    ctx.restore();
+
+    traceHandCircle(ctx, imgR + IMAGE_RING, seed, IMAGE_RING_WOBBLE);
+    ctx.strokeStyle = dimmed ? mixWithWhite(INK_LINE, DIMMED_ALPHA) : INK_LINE;
+    ctx.lineWidth = IMAGE_RING_STROKE;
+    ctx.stroke();
+    ctx.restore();
+}
+
+/** Draws an image centre-cropped to fill a square, like object-fit: cover. */
+function drawCover(ctx: Ctx, image: ImageBitmap, x: number, y: number, size: number): void {
+    const side = Math.min(image.width, image.height);
+    ctx.drawImage(image, (image.width - side) / 2, (image.height - side) / 2, side, side, x, y, size, size);
 }
 
 /** Renders the disc a meta describes: its visible items, rotation, result and wobble. */
@@ -219,8 +296,11 @@ function roundRectPath(ctx: Ctx, x: number, y: number, w: number, h: number, r: 
     ctx.closePath();
 }
 
-/** The prototype's hand-drawn result pill: white, 2px ink border, lime dot, "Picked" and the name. */
-function drawPill(ctx: Ctx, name: string): void {
+/**
+ * The prototype's hand-drawn result pill: white, 2px ink border, a circle (the winner's image,
+ * or lime), "Picked" and the name.
+ */
+function drawPill(ctx: Ctx, name: string, image: ImageBitmap | null): void {
     const padLeft = 6;
     const padRight = 12;
     const gap = 8;
@@ -242,10 +322,20 @@ function drawPill(ctx: Ctx, name: string): void {
     ctx.stroke();
 
     const dotX = x + PILL_BORDER + padLeft + PILL_DOT / 2;
+    const dotR = PILL_DOT / 2 - PILL_BORDER / 2;
     ctx.beginPath();
-    ctx.arc(dotX, cy, PILL_DOT / 2 - PILL_BORDER / 2, 0, Math.PI * 2);
-    ctx.fillStyle = ACCENT;
-    ctx.fill();
+    ctx.arc(dotX, cy, dotR, 0, Math.PI * 2);
+    if (image) {
+        ctx.save();
+        ctx.clip();
+        drawCover(ctx, image, dotX - dotR, cy - dotR, dotR * 2);
+        ctx.restore();
+        ctx.beginPath();
+        ctx.arc(dotX, cy, dotR, 0, Math.PI * 2);
+    } else {
+        ctx.fillStyle = ACCENT;
+        ctx.fill();
+    }
     ctx.strokeStyle = INK_LINE;
     ctx.lineWidth = PILL_BORDER;
     ctx.stroke();

@@ -1,4 +1,5 @@
 import { UnauthorizedError, call, generateId, styling, tokens } from "./host";
+import { setReducedMotion } from "./hubs";
 import { error, log } from "./log";
 import { MAX_ITEMS, MIN_ITEMS, type DiscMeta, type WheelItem } from "./model";
 import { PANEL_HTML } from "./panel-html";
@@ -8,9 +9,11 @@ import {
     isOwnSelectionChange,
     onBoardChanged,
     onSelectionChanged,
+    onSpinEvent,
     readWheel,
     selectedWheelIds,
     writeWheel,
+    type SpinEvent,
     type WheelView,
 } from "./wheels";
 
@@ -31,7 +34,9 @@ type PanelState = {
 };
 
 type PanelMessage =
-    | { type: "ready" }
+    | { type: "ready"; reducedMotion?: boolean; soundStored?: boolean }
+    | { type: "reducedMotion"; value: boolean }
+    | { type: "setMuted"; muted: boolean }
     | { type: "add"; names: string[] }
     | { type: "rename"; id: string; name: string }
     | { type: "remove"; id: string }
@@ -63,6 +68,9 @@ let queued: Change[] = [];
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
 let flushing = false;
 let notice: string | null = null;
+/** Sound setting for this session; null until read from storage or changed. */
+let muted: boolean | null = null;
+const SETTINGS_KEY = "settings";
 
 // ---------------------------------------------------------------------------
 // Webview
@@ -260,14 +268,59 @@ async function flush(): Promise<void> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Sound settings and spin sound
+
+/**
+ * Reads the stored sound setting. Only called when the panel reports that it was stored
+ * before, which means the storage permission was already decided, so reading never prompts.
+ */
+async function loadMuted(): Promise<void> {
+    const res = await call({ type: "command:kv-storage:get", req: { key: SETTINGS_KEY } });
+    const stored = res.res.value?.got?.muted;
+    if (typeof stored === "boolean") muted = stored;
+}
+
+/** Keeps the setting for the session and stores it; the first store asks for the storage permission. */
+async function saveMuted(value: boolean): Promise<void> {
+    muted = value;
+    const res = await call({ type: "command:kv-storage:set", req: { key: SETTINGS_KEY, payload: { muted: value } } });
+    if (res.res.error) {
+        log("sound setting kept for this session only", { error: res.res.error.type });
+        return;
+    }
+    post({ type: "soundStored" });
+}
+
+/** Forwards spin timing to the panel, which plays the sound. A closed panel just drops it. */
+function onSpin(event: SpinEvent): void {
+    const bound = mode === "edit" && target === event.wheelId;
+    if (event.type === "start") {
+        if (event.local || bound) post({ type: "spin", wheelId: event.wheelId, schedule: event.schedule, elapsedMs: event.elapsedMs });
+    } else if (event.type === "cancel") {
+        post({ type: "spinCancel", wheelId: event.wheelId });
+    } else if (event.local || bound) {
+        post({ type: "land", wheelId: event.wheelId });
+    }
+}
+
 export async function onPanelMessage(raw: unknown): Promise<void> {
     if (typeof raw !== "object" || raw === null) return;
     const message = raw as PanelMessage;
     switch (message.type) {
         case "ready":
             onThemeChanged();
+            if (typeof message.reducedMotion === "boolean") setReducedMotion(message.reducedMotion);
+            if (muted === null && message.soundStored) await loadMuted().catch(() => undefined);
+            post({ type: "sound", muted: muted ?? false });
             await onSelection();
             pushState();
+            return;
+        case "reducedMotion":
+            setReducedMotion(message.value);
+            return;
+        case "setMuted":
+            await saveMuted(message.muted).catch(() => undefined);
             return;
         case "add":
             applyListChange((items) => [...items, ...newItems(message.names, MAX_ITEMS - items.length)]);
@@ -314,4 +367,5 @@ export async function onPanelMessage(raw: unknown): Promise<void> {
 export function initPanel(): void {
     onSelectionChanged(() => void onSelection());
     onBoardChanged(onBoard);
+    onSpinEvent(onSpin);
 }

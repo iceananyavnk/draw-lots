@@ -37,6 +37,8 @@ const SEPARATOR_STROKE = 2.2;
 const NOTCH_STROKE = 2.2;
 const HUB_CIRCLE_STROKE = 2.4;
 const HUB_WOBBLE = 0.9;
+/** Bottom of the notch's bounding box: its base corners sit 8 inside the hub edge. */
+const NOTCH_PIVOT_Y = -HUB_RADIUS + 8;
 /** Hub circle seed offset from the wheel seed, as in the prototype. */
 const HUB_SEED_OFFSET = 7;
 const DIMMED_ALPHA = 0.35;
@@ -267,13 +269,19 @@ const ACTIVE_HUB: HubColors = { fill: ACCENT, line: INK_LINE, text: INK };
  * image and in the preview, so the two always line up. "plain" is the circle alone; "full"
  * adds the notch behind it and the label.
  */
-function drawHub(ctx: Ctx, seed: number, style: "plain" | "full", label = "Spin", colors: HubColors = ACTIVE_HUB): void {
+function drawHub(ctx: Ctx, seed: number, style: "plain" | "full", label = "Spin", colors: HubColors = ACTIVE_HUB, notchDeg = 0): void {
     ctx.lineJoin = "round";
     if (style === "full") {
+        // The notch turns about the middle of its base, like the prototype's transform-origin 50% 100%.
+        ctx.save();
+        ctx.translate(0, NOTCH_PIVOT_Y);
+        ctx.rotate((notchDeg * Math.PI) / 180);
+        ctx.translate(0, -NOTCH_PIVOT_Y);
         traceNotch(ctx, HUB_RADIUS);
         ctx.fillStyle = colors.fill;
         ctx.fill();
         strokeCovering(ctx, NOTCH_STROKE, colors);
+        ctx.restore();
     }
     traceHandCircle(ctx, HUB_RADIUS, seed + HUB_SEED_OFFSET, HUB_WOBBLE);
     ctx.fillStyle = colors.fill;
@@ -301,10 +309,11 @@ function strokeCovering(ctx: Ctx, width: number, colors: HubColors): void {
 }
 
 /**
- * Renders the interactive hub shown as a preview element, at the given opacity. The preview
- * is drawn by each client, so the disabled style follows that client's theme tokens.
+ * Renders the interactive hub shown as a preview element, at the given opacity and notch
+ * angle (negative turns it counterclockwise). The preview is drawn by each client, so the
+ * disabled style follows that client's theme tokens.
  */
-export async function renderHub(alpha: number, state: HubState, seed: number): Promise<Blob> {
+export async function renderHub(alpha: number, state: HubState, seed: number, notchDeg = 0): Promise<Blob> {
     await loadFonts();
     const canvas = new OffscreenCanvas(HUB_WIDTH * PIXEL_RATIO, HUB_HEIGHT * PIXEL_RATIO);
     const ctx = canvas.getContext("2d") as Ctx;
@@ -318,9 +327,9 @@ export async function renderHub(alpha: number, state: HubState, seed: number): P
             line: token("--dd-border-subtle", "rgba(0,0,0,0.10)"),
             text: token("--dd-text-disabled", "rgba(0,0,0,0.30)"),
             cover: elevated,
-        });
+        }, notchDeg);
     } else {
-        drawHub(ctx, seed, "full", state === "reset" ? "Reset" : "Spin");
+        drawHub(ctx, seed, "full", state === "reset" ? "Reset" : "Spin", ACTIVE_HUB, notchDeg);
     }
     return canvas.convertToBlob({ type: "image/png" });
 }

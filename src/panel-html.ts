@@ -33,6 +33,12 @@ svg { display: block; }
     line-height: var(--dd-type-heading-line, 20px);
     font-weight: var(--dd-type-heading-weight, 600);
 }
+.headR { display: flex; align-items: center; gap: var(--dd-space-6, 6px); }
+.iconbtn { width: 28px; height: 28px; border: 0; border-radius: var(--dd-radius-md, 6px); background: transparent; color: var(--dd-text-secondary, rgba(0,0,0,.7)); display: grid; place-items: center; cursor: pointer; padding: 0; }
+.iconbtn:hover { background: var(--dd-interaction-hover, rgba(0,0,0,.04)); color: var(--dd-text-primary, rgba(0,0,0,.95)); }
+.iconbtn svg { width: 16px; height: 16px; }
+.iconbtn[aria-pressed="true"] .off, .iconbtn[aria-pressed="false"] .on { display: none; }
+.iconbtn[aria-pressed="false"] { color: var(--dd-text-tertiary, rgba(0,0,0,.5)); }
 .count { font-size: var(--dd-type-caption-size, 11px); line-height: var(--dd-type-caption-line, 16px); color: var(--dd-text-tertiary, rgba(0,0,0,.5)); font-variant-numeric: tabular-nums; }
 
 .input {
@@ -98,7 +104,12 @@ li.picked .nm { color: var(--dd-text-tertiary, rgba(0,0,0,.5)); }
 <main class="panel" aria-label="Draw Lots">
     <div class="head">
         <h1 id="title">New wheel</h1>
-        <span class="count" id="count"></span>
+        <div class="headR">
+            <span class="count" id="count"></span>
+            <button class="iconbtn" id="soundBtn" aria-pressed="true" title="Mute sounds" aria-label="Mute sounds">
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.8 6.2C3.9 6.1 4.9 6.1 5.8 6L8.9 3.3C9.1 3.1 9.4 3.3 9.4 3.6 9.5 6.5 9.5 9.6 9.4 12.4 9.4 12.7 9.1 12.9 8.9 12.7L5.8 10C4.8 9.9 3.8 9.9 2.8 9.8 2.5 9.8 2.4 9.6 2.4 9.3 2.3 8.4 2.4 7.4 2.4 6.6 2.4 6.4 2.6 6.2 2.8 6.2z"/><path class="on" d="M11.3 6.1c.6.6.9 1.2.9 1.9 0 .7-.3 1.3-.8 1.9M12.9 4.4c1 1 1.5 2.2 1.5 3.6 0 1.4-.6 2.6-1.5 3.6"/><path class="off" d="M11.4 6.3c1 1 2 2.1 2.9 3.2M14.2 6.2c-1 1.1-1.9 2.2-2.9 3.4"/></svg>
+            </button>
+        </div>
     </div>
     <p class="notice" id="notice" role="alert" hidden></p>
     <div id="editor">
@@ -293,8 +304,95 @@ li.picked .nm { color: var(--dd-text-tertiary, rgba(0,0,0,.5)); }
     $("resetPicked").addEventListener("click", function () { send({ type: "resetPicked" }); });
     $("addWheel").addEventListener("click", function () { send({ type: "addWheel" }); });
 
+    // ---- Sound: synthesized with Web Audio, as in the prototype. No audio files. ----
+    var audio = null, muted = false, voices = [];
+    var STORED_HINT = "draw-lots:sound-stored";
+
+    // The context is created and resumed only by a pointerdown in the panel (browser autoplay rules).
+    document.addEventListener("pointerdown", function () {
+        if (!audio) {
+            try { audio = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { audio = null; }
+        }
+        if (audio && audio.state === "suspended") audio.resume();
+    }, true);
+
+    function canPlay() { return !!audio && audio.state === "running" && !muted; }
+
+    function tone(t, freq, dur, vol, type) {
+        var o = audio.createOscillator(), g = audio.createGain();
+        o.type = type || "sine";
+        o.frequency.setValueAtTime(freq, t);
+        g.gain.setValueAtTime(0.0001, t);
+        g.gain.exponentialRampToValueAtTime(vol, t + 0.005);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+        o.connect(g).connect(audio.destination);
+        o.start(t);
+        o.stop(t + dur + 0.02);
+        voices.push({ gain: g, end: t + dur + 0.02 });
+    }
+    function sfxTick(t) {
+        tone(t, 1500, 0.035, 0.09, "triangle");
+        tone(t, 380, 0.03, 0.05, "sine");
+    }
+    function sfxLand(t) {
+        [523.25, 659.25, 783.99, 1046.5].forEach(function (f, k) {
+            tone(t + k * 0.07, f, k === 3 ? 0.55 : 0.28, k === 3 ? 0.16 : 0.12, "sine");
+        });
+    }
+    function silence() {
+        voices.forEach(function (v) { try { v.gain.disconnect(); } catch (e) {} });
+        voices = [];
+    }
+    function prune() {
+        var now = audio ? audio.currentTime : 0;
+        voices = voices.filter(function (v) { return v.end > now; });
+    }
+
+    // Same maths as the driver's tickTimes: a wedge boundary passes the notch whenever the
+    // rotation crosses a multiple of the wedge angle; ease-out quart is inverted per boundary.
+    function tickTimes(s) {
+        var out = [], wedge = 360 / s.count, end = s.startDeg + s.deltaDeg, last = -Infinity;
+        if (s.count < 2 || s.deltaDeg <= 0) return out;
+        for (var m = Math.floor(s.startDeg / wedge) + 1; m * wedge <= end; m++) {
+            var u = (m * wedge - s.startDeg) / s.deltaDeg;
+            var t = (1 - Math.pow(1 - u, 0.25)) * s.durationMs;
+            if (t - last >= 45) { out.push(t); last = t; }
+        }
+        return out;
+    }
+
+    function playSpin(s, elapsedMs) {
+        if (!canPlay()) return;
+        prune();
+        var elapsed = elapsedMs || 0, base = audio.currentTime - elapsed / 1000;
+        tickTimes(s).forEach(function (t) { if (t >= elapsed) sfxTick(base + t / 1000); });
+        sfxLand(base + s.durationMs / 1000);
+    }
+
+    function setMuted(value, fromUser) {
+        muted = value;
+        var b = $("soundBtn"), label = muted ? "Turn sounds on" : "Mute sounds";
+        b.setAttribute("aria-pressed", String(!muted));
+        b.title = label;
+        b.setAttribute("aria-label", label);
+        if (muted) silence();
+        if (fromUser) send({ type: "setMuted", muted: muted });
+    }
+    $("soundBtn").addEventListener("click", function () { setMuted(!muted, true); });
+
+    var motion = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
+    if (motion && motion.addEventListener) {
+        motion.addEventListener("change", function () { send({ type: "reducedMotion", value: motion.matches }); });
+    }
+    function storedHint() { try { return window.localStorage.getItem(STORED_HINT) === "1"; } catch (e) { return false; } }
+
     api.onMessage(function (msg) {
         if (!msg || typeof msg !== "object") return;
+        if (msg.type === "spin") { playSpin(msg.schedule, msg.elapsedMs); return; }
+        if (msg.type === "spinCancel") { silence(); if (canPlay()) sfxLand(audio.currentTime); return; }
+        if (msg.type === "land") { if (canPlay()) sfxLand(audio.currentTime); return; }
+        if (msg.type === "sound") { setMuted(!!msg.muted, false); return; }
+        if (msg.type === "soundStored") { try { window.localStorage.setItem(STORED_HINT, "1"); } catch (e) {} return; }
         if (msg.type === "theme") {
             $("theme").textContent = ":root{" + msg.css + "}";
         } else if (msg.type === "state") {
@@ -304,7 +402,7 @@ li.picked .nm { color: var(--dd-text-tertiary, rgba(0,0,0,.5)); }
             render();
         }
     });
-    send({ type: "ready" });
+    send({ type: "ready", reducedMotion: !!(motion && motion.matches), soundStored: storedHint() });
 })();
 </script>
 </body>

@@ -1,4 +1,5 @@
 import { seedFrom } from "./hand";
+import type { SpinSchedule } from "./spin-schedule";
 
 /** Logical wheel geometry, in canvas units at scale 1. */
 export const RIM_RADIUS = 146;
@@ -53,6 +54,8 @@ export type DiscMeta = {
     removePicked: boolean;
     /** Seed of the hand-drawn wobble: derived from the wheelId at creation and kept by copies. */
     seed: number;
+    /** On the image that turns during a spin only: the spin's timing, for other clients' sound. */
+    spin?: SpinSchedule;
 };
 
 export type Rect = { x: number; y: number; width: number; height: number };
@@ -84,7 +87,15 @@ function normalizeMeta(raw: Record<string, unknown>): DiscMeta | null {
         picked: Array.isArray(raw.picked) ? raw.picked.filter((id): id is string => typeof id === "string" && known.has(id)) : [],
         removePicked: typeof raw.removePicked === "boolean" ? raw.removePicked : true,
         seed: typeof raw.seed === "number" ? raw.seed : seedFrom(raw.wheelId),
+        spin: readSchedule(raw.spin),
     };
+}
+
+function readSchedule(raw: unknown): SpinSchedule | undefined {
+    if (typeof raw !== "object" || raw === null) return undefined;
+    const s = raw as Record<string, unknown>;
+    const ok = ["durationMs", "startDeg", "deltaDeg", "count"].every((k) => typeof s[k] === "number" && Number.isFinite(s[k]));
+    return ok ? { durationMs: s.durationMs as number, startDeg: s.startDeg as number, deltaDeg: s.deltaDeg as number, count: s.count as number } : undefined;
 }
 
 /** Reads the disc meta, or "legacy-hub" for a committed hub written by builds before the preview hub. */

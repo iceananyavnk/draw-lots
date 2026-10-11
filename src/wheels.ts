@@ -1,6 +1,6 @@
 import type { SubscribedDrawdyElement } from "@drawdy/driver-protocol";
 import { call, generateId, sleep, unwrap } from "./host";
-import { discForHubElement, hubLookOf, isSuppressed, rekeyHub, releaseHub, removeHub, suppressHub, syncHubs, type HubLook } from "./hubs";
+import { animateSpin, discForHubElement, hubLookOf, isSuppressed, rekeyHub, releaseHub, removeHub, suppressHub, syncHubs, type HubLook } from "./hubs";
 import {
     HUB_RADIUS,
     META_KEY,
@@ -20,6 +20,7 @@ import {
 import { cryptoRandom } from "./random";
 import { isLeftHalf, renderMeta } from "./render";
 import { pickSpin } from "./spin-math";
+import { easeOutQuart, type SpinSchedule } from "./spin-schedule";
 import { seedFrom } from "./hand";
 import { debug, error, log } from "./log";
 
@@ -87,6 +88,28 @@ export function onBoardChanged(fn: BoardListener): void {
 export function onSelectionChanged(fn: () => void): void {
     selectionListeners.push(fn);
 }
+
+/**
+ * Spin events for sound. `elapsedMs` is how far into the schedule the spin already is when
+ * the event fires. Remote events come from another client's spin image (which carries the
+ * schedule) or its result; this client does not animate those.
+ */
+export type SpinEvent =
+    | { type: "start"; wheelId: string; schedule: SpinSchedule; elapsedMs: number; local: boolean }
+    | { type: "cancel"; wheelId: string }
+    | { type: "land"; wheelId: string; local: boolean };
+const spinListeners: ((event: SpinEvent) => void)[] = [];
+
+export function onSpinEvent(fn: (event: SpinEvent) => void): void {
+    spinListeners.push(fn);
+}
+
+function emitSpin(event: SpinEvent): void {
+    for (const fn of spinListeners) fn(event);
+}
+
+/** wheelIds whose remote spin schedule is still playing, so their result does not chime twice. */
+const remoteSpinUntil = new Map<string, number>();
 
 export function isBusy(wheelId: string): boolean {
     return spinning.has(wheelId) || writing.has(wheelId);
@@ -335,6 +358,14 @@ async function classifyAppeared(discs: Disc[]): Promise<void> {
         seen.add(d.id);
         log("disc appeared", { id: d.id, wheelId: d.meta.wheelId, version: d.meta.version, x: d.rect.x, y: d.rect.y, decision, reason });
 
+        // Another client's spin: its spinning image carries the schedule, its result lands it.
+        if (decision === "swap" && d.meta.spin) {
+            remoteSpinUntil.set(d.meta.wheelId, Date.now() + d.meta.spin.durationMs + 1000);
+            emitSpin({ type: "start", wheelId: d.meta.wheelId, schedule: d.meta.spin, elapsedMs: 0, local: false });
+        } else if (decision === "swap" && d.meta.winnerId !== null && (remoteSpinUntil.get(d.meta.wheelId) ?? 0) < Date.now()) {
+            emitSpin({ type: "land", wheelId: d.meta.wheelId, local: false });
+        }
+
         if (decision === "copy") {
             const wheelId = generateId();
             log("copy gets a new wheelId", { id: d.id, from: d.meta.wheelId, to: wheelId });
@@ -424,7 +455,6 @@ async function addReplacement(like: Disc, meta: DiscMeta): Promise<Disc> {
 // ---------------------------------------------------------------------------
 // Spinning
 
-const easeOutQuart = (t: number) => 1 - (1 - t) ** 4;
 
 function flipsDiffer(count: number, fromDeg: number, toDeg: number): boolean {
     for (let i = 0; i < count; i++) {
@@ -486,6 +516,8 @@ export async function spinFromClick(trigger: SpinTrigger): Promise<void> {
 
     spinning.add(wheelId);
     let previewing = false;
+    let started = false;
+    let landed = false;
     try {
         log("spin trigger: scene:click on preview hub", { wheelId, discId, cursor: trigger.cursor });
         quietSelection();
@@ -505,6 +537,7 @@ export async function spinFromClick(trigger: SpinTrigger): Promise<void> {
             deltaDeg: Number(target.deltaDeg.toFixed(2)),
         });
         const stack = stackOf(disc, discs);
+        const schedule: SpinSchedule = { durationMs: SPIN_DURATION_MS, startDeg, deltaDeg: target.deltaDeg, count };
 
         // The image that turns shows only the spinnable items (the previous winner leaves here when
         // picked names are removed), has its labels flipped for the final rotation, and is never a
@@ -516,10 +549,12 @@ export async function spinFromClick(trigger: SpinTrigger): Promise<void> {
         let turning = disc;
         let leftovers: Disc[] = stack;
         if (needsSpinImage) {
+            // It carries the schedule, so other clients can play the spin's sound.
             turning = await addReplacement(disc, {
                 ...disc.meta,
                 winnerId: null,
                 labelDeg: target.finalDeg,
+                spin: schedule,
                 version: disc.meta.version + 1,
             });
             leftovers = [disc, ...stack];
@@ -537,6 +572,9 @@ export async function spinFromClick(trigger: SpinTrigger): Promise<void> {
         const clearOld = sleep(SWAP_SETTLE_MS).then(() => removeElements(leftovers));
 
         const t0 = performance.now();
+        started = true;
+        emitSpin({ type: "start", wheelId, schedule, elapsedMs: 0, local: true });
+        void animateSpin(turning.id, schedule, t0);
         for (;;) {
             const frameStart = performance.now();
             const t = Math.min(1, (frameStart - t0) / SPIN_DURATION_MS);
@@ -548,12 +586,14 @@ export async function spinFromClick(trigger: SpinTrigger): Promise<void> {
             if (t >= 1) break;
             await sleep(Math.max(0, FRAME_MS - (performance.now() - frameStart)));
         }
+        landed = true;
         await clearOld;
 
         const result = await addReplacement(turning, {
             ...turning.meta,
             rotationDeg: target.finalDeg,
             labelDeg: undefined,
+            spin: undefined,
             winnerId: winner.id,
             picked: turning.meta.removePicked ? [...turning.meta.picked, winner.id] : turning.meta.picked,
             version: turning.meta.version + 1,
@@ -567,6 +607,7 @@ export async function spinFromClick(trigger: SpinTrigger): Promise<void> {
         if (restored.length > 0) log("removing discs restored during the spin", { ids: restored.map((d) => d.id) });
         await removeElements([turning, ...restored]);
     } finally {
+        if (started && !landed) emitSpin({ type: "cancel", wheelId });
         if (previewing) await call({ type: "command:scene:end-preview", req: {} });
         spinning.delete(wheelId);
         scheduleRefresh();

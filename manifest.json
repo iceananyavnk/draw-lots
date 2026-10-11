@@ -6,7 +6,8 @@
     "main": "main.js",
     "permissions": [
         "dom",
-        "scene"
+        "scene",
+        "storage"
     ],
     "icon": "icon.svg"
 }

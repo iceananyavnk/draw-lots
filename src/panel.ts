@@ -2,7 +2,7 @@ import { UnauthorizedError, call, generateId, styling, tokens } from "./host";
 import { setReducedMotion } from "./hubs";
 import { error, log } from "./log";
 import { seedFrom } from "./hand";
-import { IMAGE_ITEM_LIMIT, MAX_ITEMS, MIN_ITEMS, isImageDataUrl, visibleItems, type DiscMeta, type WheelItem } from "./model";
+import { IMAGE_ITEM_LIMIT, MAX_ITEMS, isImageDataUrl, visibleItems, type DiscMeta, type WheelItem } from "./model";
 import { PANEL_HTML } from "./panel-html";
 import {
     addWheel,
@@ -22,7 +22,8 @@ export const WEBVIEW_ID = "draw-lots:panel";
 const EDIT_DEBOUNCE_MS = 400;
 const MAX_NAME_LENGTH = 60;
 
-type Mode = "draft" | "edit";
+/** "new": no wheel is bound, and the first added item creates one. "edit": the panel edits the bound wheel. */
+type Mode = "new" | "edit";
 
 /** A list row as the panel sees it; the image itself is sent once, by key. */
 type PanelItem = { id: string; name: string; imageKey: string | null };
@@ -50,24 +51,23 @@ type PanelMessage =
     | { type: "clear" }
     | { type: "setRemovePicked"; value: boolean }
     | { type: "resetPicked" }
-    | { type: "addWheel" }
     | { type: "setImage"; id: string; image: string }
     | { type: "removeImage"; id: string };
 
 /** A change waiting to be written to the target wheel. */
 type Change = (meta: DiscMeta) => DiscMeta;
 
-let mode: Mode = "draft";
-/** The new-wheel list; kept for the session while the panel edits wheels. */
-let draft: WheelItem[] = [];
+let mode: Mode = "new";
 /**
  * The current wheel the panel edits, by wheelId so swaps and spins keep it. It changes only
- * when a single wheel is selected, a wheel is added from the panel, or the wheel leaves the
- * board (then the draft shows). Per client and session; nothing is stored.
+ * when a single wheel is selected, the panel creates a wheel, or the wheel leaves the board
+ * (then the panel is back to "new"). Per client and session; nothing is stored.
  */
 let target: string | null = null;
-/** Set while "Add wheel to board" runs, so the new wheel's selection binds the panel to it. */
+/** Set while the first item creates a wheel, so the new wheel's selection binds the panel to it. */
 let addingWheel = false;
+/** Names added while the first item's wheel is being created; they go to that wheel once bound. */
+let namesWhileCreating: string[] | null = null;
 /** The target wheel's meta as last read from the board. */
 let targetMeta: DiscMeta | null = null;
 /** Local list edits not yet written to the wheel; null when the wheel is up to date. */
@@ -127,7 +127,7 @@ export function showNotice(text: string): void {
 // State
 
 function currentItems(): WheelItem[] {
-    return mode === "draft" ? draft : working ?? targetMeta?.items ?? [];
+    return mode === "new" ? [] : working ?? targetMeta?.items ?? [];
 }
 
 /** Image keys this panel instance already has; reset when a new panel document starts. */
@@ -214,7 +214,7 @@ function onBoard(wheels: WheelView[]): void {
         // Every disc of the wheel is gone (deleted, or undone away); a swap always keeps one.
         if (!isBusy(target)) {
             log("panel unbound: wheel left the board", { wheelId: target });
-            void setTarget("draft", null);
+            void setTarget("new", null);
         }
         return;
     }
@@ -236,11 +236,6 @@ function newItems(names: string[], room: number): WheelItem[] {
 }
 
 function applyListChange(change: (items: WheelItem[]) => WheelItem[]): void {
-    if (mode === "draft") {
-        draft = change(draft);
-        pushState();
-        return;
-    }
     if (mode !== "edit" || !targetMeta) return;
     working = change(working ?? targetMeta.items);
     pushState();
@@ -362,7 +357,8 @@ export async function onPanelMessage(raw: unknown): Promise<void> {
             await saveMuted(message.muted).catch(() => undefined);
             return;
         case "add":
-            applyListChange((items) => [...items, ...newItems(message.names, MAX_ITEMS - items.length)]);
+            if (mode === "new") await createWheel(message.names);
+            else applyListChange((items) => [...items, ...newItems(message.names, MAX_ITEMS - items.length)]);
             return;
         case "rename": {
             const name = message.name.trim().slice(0, MAX_NAME_LENGTH);
@@ -399,20 +395,36 @@ export async function onPanelMessage(raw: unknown): Promise<void> {
             if (mode !== "edit") return;
             queueChange((meta) => ({ ...meta, picked: [], winnerId: null, labelDeg: undefined }));
             return;
-        case "addWheel": {
-            if (mode !== "draft" || draft.length < MIN_ITEMS) return;
-            addingWheel = true;
-            try {
-                await addWheel(draft.map((it) => ({ ...it })));
-                // Bind even if the selection event was missed or arrived first.
-                await onSelection();
-            } catch (err) {
-                if (err instanceof UnauthorizedError) showNotice("Draw Lots needs access to the board. Re-enable it in the extension permissions.");
-                else error("adding a wheel failed", { err });
-            } finally {
-                addingWheel = false;
-            }
-            return;
+    }
+}
+
+/**
+ * The first item (or a pasted batch) creates a wheel at the viewport centre, selects it and
+ * binds the panel to it. Names added before the wheel exists are applied to it as a normal
+ * list edit once it is bound.
+ */
+async function createWheel(names: string[]): Promise<void> {
+    if (namesWhileCreating) {
+        namesWhileCreating.push(...names);
+        return;
+    }
+    const items = newItems(names, MAX_ITEMS);
+    if (items.length === 0) return;
+    namesWhileCreating = [];
+    addingWheel = true;
+    try {
+        await addWheel(items);
+        // Bind even if the selection event was missed or arrived first.
+        await onSelection();
+    } catch (err) {
+        if (err instanceof UnauthorizedError) showNotice("Draw Lots needs access to the board. Re-enable it in the extension permissions.");
+        else error("creating a wheel failed", { err });
+    } finally {
+        addingWheel = false;
+        const later = namesWhileCreating;
+        namesWhileCreating = null;
+        if (later.length > 0 && mode === "edit") {
+            applyListChange((current) => [...current, ...newItems(later, MAX_ITEMS - current.length)]);
         }
     }
 }

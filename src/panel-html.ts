@@ -106,11 +106,6 @@ li.picked .nm { color: var(--dd-text-tertiary, rgba(0,0,0,.5)); }
 .status .d { width: 6px; height: 6px; border-radius: 50%; background: var(--dd-status-success, #53C683); }
 .status.busy .d { background: var(--dd-text-tertiary, rgba(0,0,0,.5)); animation: blink 800ms infinite; }
 @keyframes blink { 50% { opacity: .3; } }
-.primary { height: var(--dd-control-md, 36px); width: 100%; border: 0; border-radius: var(--dd-radius-lg, 8px); background: var(--dd-accent, #C5F601); color: var(--dd-on-accent, #090909);
-    font-size: var(--dd-type-label-size, 12px); font-weight: var(--dd-type-label-weight, 500); cursor: pointer; }
-.primary:hover { background: var(--dd-accent-hover, #D4FF2E); }
-.primary:active { background: var(--dd-accent-pressed, #B3E000); }
-.primary:disabled { background: var(--dd-interaction-disabled, rgba(0,0,0,.06)); color: var(--dd-text-disabled, rgba(0,0,0,.3)); cursor: not-allowed; }
 .notice { margin: 0; padding: var(--dd-space-8, 8px); border-radius: var(--dd-radius-md, 6px); background: var(--dd-status-warning-subtle, var(--dd-surface-section, #f4f4f5)); color: var(--dd-text-primary, rgba(0,0,0,.95)); }
 @media (prefers-reduced-motion: reduce) { .status.busy .d { animation: none; } .switch .track, .switch .thumb { transition: none; } }
 </style>
@@ -148,7 +143,6 @@ li.picked .nm { color: var(--dd-text-tertiary, rgba(0,0,0,.5)); }
     </div>
     <div class="foot" id="foot">
         <div class="status" id="status" role="status" aria-live="polite"><span class="d"></span><span id="statusText">Wheel is up to date</span></div>
-        <button class="primary" id="addWheel">Add wheel to board</button>
     </div>
 </main>
 <script>
@@ -261,7 +255,7 @@ li.picked .nm { color: var(--dd-text-tertiary, rgba(0,0,0,.5)); }
         if (items.length === 0) {
             var empty = document.createElement("li");
             empty.className = "empty";
-            empty.textContent = "Add names or options to spin.";
+            empty.textContent = edit ? "Add names or options to spin." : "Add a name to create a wheel.";
             list.appendChild(empty);
         }
         $("listFoot").hidden = items.length === 0;
@@ -271,8 +265,7 @@ li.picked .nm { color: var(--dd-text-tertiary, rgba(0,0,0,.5)); }
         $("status").hidden = !edit;
         $("status").classList.toggle("busy", state.status === "pending");
         $("statusText").textContent = state.status === "pending" ? "Updating wheel\\u2026" : "Wheel is up to date";
-        $("addWheel").hidden = state.mode !== "draft";
-        $("addWheel").disabled = items.length < 2;
+        $("foot").hidden = !edit;
 
         $("notice").hidden = !state.notice;
         $("notice").textContent = state.notice || "";
@@ -490,7 +483,6 @@ li.picked .nm { color: var(--dd-text-tertiary, rgba(0,0,0,.5)); }
         send({ type: "setRemovePicked", value: !(state && state.removePicked) });
     });
     $("resetPicked").addEventListener("click", function () { send({ type: "resetPicked" }); });
-    $("addWheel").addEventListener("click", function () { send({ type: "addWheel" }); });
 
     // ---- Sound: synthesized with Web Audio, as in the prototype. No audio files. ----
     var audio = null, muted = false, voices = [];

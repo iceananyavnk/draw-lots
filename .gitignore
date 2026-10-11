@@ -1,0 +1,7 @@
+node_modules/
+dist/
+CLAUDE.md
+.claude/
+notes/
+*.prompt.md
+.DS_Store

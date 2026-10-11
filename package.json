@@ -1,0 +1,24 @@
+{
+    "name": "draw-lots",
+    "version": "0.1.0",
+    "description": "Spin a wheel on your board to pick a name, a team, or what's for lunch.",
+    "license": "UNLICENSED",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "dev": "vite",
+        "build": "node build.ts",
+        "typecheck": "tsc --noEmit",
+        "fonts": "node scripts/embed-fonts.mjs"
+    },
+    "devDependencies": {
+        "@types/node": "^20",
+        "typescript": "^5",
+        "vite": "^8.2.1",
+        "@drawdy/driver-protocol": "latest",
+        "@rollup/plugin-typescript": "^12.1.2",
+        "fflate": "^0.8.2",
+        "rollup": "^4.34.0",
+        "tslib": "^2.8.1"
+    }
+}

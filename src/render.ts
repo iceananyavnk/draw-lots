@@ -1,4 +1,5 @@
 import { loadFonts } from "./fonts";
+import { HandWheel, traceHandCircle, traceNotch } from "./hand";
 import { token } from "./host";
 import { fitLabel, measureLabel, renderLabel, truncateLabel, type TextStep } from "./labels";
 import {
@@ -6,8 +7,6 @@ import {
     HUB_HEIGHT,
     HUB_RADIUS,
     HUB_WIDTH,
-    NOTCH_HALF_WIDTH,
-    NOTCH_HEIGHT,
     PILL_GAP,
     PILL_HEIGHT,
     PIXEL_RATIO,
@@ -27,18 +26,27 @@ type Ctx = OffscreenCanvasRenderingContext2D;
 /** The wheel is a board object with fixed colors, independent of the Drawdy theme. */
 const WEDGE_COLORS = ["#33DBCB", "#FFC67D", "#87A3FA", "#B5A1FF", "#FFA1B9"];
 const LAST_WEDGE_FALLBACK = "#FFC67D";
+const EMPTY_FILL = "#FFFFFF";
 const WEDGE_TEXT = "#090909";
 const ACCENT = "#C5F601";
 const INK = "#090909";
-const SEPARATOR = "#FFFFFF";
-const SEPARATOR_WIDTH = 1.5;
-const HUB_STROKE = 1.5;
+/** Hand-drawn ink, as in the prototype. */
+const INK_LINE = "#1F1B16";
+const RIM_STROKE = 2.8;
+const SEPARATOR_STROKE = 2.2;
+const NOTCH_STROKE = 2.2;
+const HUB_CIRCLE_STROKE = 2.4;
+const HUB_WOBBLE = 0.9;
+/** Hub circle seed offset from the wheel seed, as in the prototype. */
+const HUB_SEED_OFFSET = 7;
 const DIMMED_ALPHA = 0.35;
-const WINNER_OUTLINE = 3;
+const WINNER_STROKE = 5;
+const WINNER_OPACITY = 0.95;
 const PILL_FILL = "#FFFFFF";
-const PILL_BORDER = "rgba(0,0,0,0.12)";
+const PILL_BORDER = 2;
 const PILL_LABEL = "rgba(0,0,0,0.5)";
 const PILL_NAME = "#090909";
+const PILL_DOT = 28;
 
 /** Largest first. */
 const WEDGE_STEPS: TextStep[] = [
@@ -52,7 +60,8 @@ const WEDGE_STEPS: TextStep[] = [
 const TEXT_PADDING = 24;
 const HUB_LABEL: TextStep = { size: 15, weight: 700 };
 const PILL_LABEL_STEP: TextStep = { size: 13, weight: 500 };
-const PILL_NAME_STEP: TextStep = { size: 13, weight: 600 };
+const PILL_NAME_STEP: TextStep = { size: 15, weight: 600 };
+const PILL_MAX_WIDTH = 260;
 
 export function wedgeColors(count: number): string[] {
     const colors = Array.from({ length: count }, (_, i) => WEDGE_COLORS[i % WEDGE_COLORS.length]);
@@ -79,13 +88,6 @@ function mixWithWhite(hex: string, alpha: number): string {
     return `rgb(${channel(16)}, ${channel(8)}, ${channel(0)})`;
 }
 
-function wedgePath(ctx: Ctx, start: number, end: number, radius: number): void {
-    ctx.beginPath();
-    ctx.moveTo(0, 0);
-    ctx.arc(0, 0, radius, start, end);
-    ctx.closePath();
-}
-
 export type DiscRenderInput = {
     items: WheelItem[];
     /** Clockwise rotation of the wedges. */
@@ -93,14 +95,17 @@ export type DiscRenderInput = {
     /** Rotation the label flips are chosen for; defaults to rotationDeg. A spinning image uses its final rotation. */
     labelDeg?: number;
     winnerIndex: number | null;
+    /** Seed of the hand-drawn wobble. */
+    seed: number;
 };
 
 /**
- * Renders the disc. Wedge i spans [i, i + 1) * wedgeAngle clockwise from 12 o'clock
- * before rotation. Without a result the hub is baked in as a plain circle, which reads
- * as a wheel without the extension and can rotate unseen under the preview hub. With a
- * result the full hub, notch and pill are baked in and the canvas grows downward for
- * the pill, keeping the wheel in the top WHEEL_SIZE square.
+ * Renders the disc in the hand-drawn style. Wedge i spans [i, i + 1) * wedgeAngle clockwise
+ * from 12 o'clock before rotation. Fills and labels come first, then the winner outline,
+ * then the ink (separators and rim), which is never dimmed. Without a result the hub is
+ * baked in as the plain hand-drawn circle, which reads as a wheel without the extension and
+ * rotates unseen under the preview hub. With a result the full hub, notch and pill are baked
+ * in and the canvas grows downward for the pill, keeping the wheel in the top square.
  */
 export async function renderDisc(input: DiscRenderInput): Promise<{ blob: Blob; width: number; height: number }> {
     await loadFonts();
@@ -112,74 +117,77 @@ export async function renderDisc(input: DiscRenderInput): Promise<{ blob: Blob; 
     const ctx = canvas.getContext("2d") as Ctx;
     ctx.scale(PIXEL_RATIO, PIXEL_RATIO);
 
-    const count = Math.max(items.length, 1);
-    const wedgeAngle = (2 * Math.PI) / count;
-    const colors = wedgeColors(count);
-    const top = -Math.PI / 2;
+    const hand = new HandWheel(input.seed, RIM_RADIUS, HUB_RADIUS);
+    const count = items.length;
+    const seg = (2 * Math.PI) / Math.max(count, 1);
     const midRadius = (RIM_RADIUS + HUB_RADIUS) / 2;
     const maxWidth = RIM_RADIUS - HUB_RADIUS - TEXT_PADDING;
-    const maxThickness = 0.6 * 2 * midRadius * Math.sin(Math.min(wedgeAngle, Math.PI) / 2);
+    const maxThickness = 0.6 * 2 * midRadius * Math.sin(Math.min(seg, Math.PI) / 2);
+    const colors = wedgeColors(count);
 
     ctx.save();
     ctx.translate(WHEEL_SIZE / 2, WHEEL_SIZE / 2);
     ctx.rotate((rotationDeg * Math.PI) / 180);
 
+    if (count === 0) {
+        hand.traceRim(ctx, RIM_RADIUS);
+        ctx.fillStyle = EMPTY_FILL;
+        ctx.fill();
+    }
     for (let i = 0; i < count; i++) {
-        const start = top + i * wedgeAngle;
+        const a0 = i * seg;
         const dimmed = hasResult && i !== winnerIndex;
-        // Dimmed wedges are pre-mixed with white and stay opaque, so whichever disc of a stack
-        // is drawn on top fully hides the wedges of the discs below it.
+        // Only fills dim. They are pre-mixed with white and stay opaque, so whichever disc of a
+        // stack is drawn on top fully hides the wedges below it.
+        if (count === 1) hand.traceRim(ctx, RIM_RADIUS);
+        else hand.traceWedge(ctx, a0, a0 + seg);
         ctx.globalAlpha = 1;
-        wedgePath(ctx, start, start + wedgeAngle, RIM_RADIUS);
         ctx.fillStyle = dimmed ? mixWithWhite(colors[i], DIMMED_ALPHA) : colors[i];
         ctx.fill();
-        ctx.globalAlpha = dimmed ? DIMMED_ALPHA : 1;
 
-        const item = items[i];
-        if (!item) continue;
-        const layout = fitLabel(ctx, item.name, WEDGE_STEPS, maxWidth, maxThickness);
+        const layout = fitLabel(ctx, items[i].name, WEDGE_STEPS, maxWidth, maxThickness);
         ctx.save();
-        // A single item fills the disc; its label sits on the radius toward 12 o'clock.
-        ctx.rotate(count === 1 ? top : start + wedgeAngle / 2);
+        // Canvas angles start at 3 o'clock; a single item's label sits on the radius toward 12 o'clock.
+        ctx.rotate((count === 1 ? 0 : a0 + seg / 2) - Math.PI / 2);
         ctx.translate(midRadius, 0);
         if (count > 1 && isLeftHalf(i, count, labelDeg)) ctx.rotate(Math.PI);
+        ctx.globalAlpha = dimmed ? DIMMED_ALPHA : 1;
         ctx.fillStyle = WEDGE_TEXT;
         renderLabel(ctx, layout);
         ctx.restore();
     }
     ctx.globalAlpha = 1;
 
+    if (hasResult && count > 1) {
+        const a0 = winnerIndex * seg;
+        hand.traceWinner(ctx, a0, a0 + seg);
+        ctx.globalAlpha = WINNER_OPACITY;
+        ctx.strokeStyle = ACCENT;
+        ctx.lineWidth = WINNER_STROKE;
+        ctx.lineJoin = "round";
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+    }
+
+    // Ink sits above the fills and is never dimmed, like a colouring book.
+    ctx.strokeStyle = INK_LINE;
     if (count > 1) {
-        ctx.strokeStyle = SEPARATOR;
-        ctx.lineWidth = SEPARATOR_WIDTH;
-        ctx.lineCap = "butt";
+        ctx.lineWidth = SEPARATOR_STROKE;
+        ctx.lineCap = "round";
         for (let i = 0; i < count; i++) {
-            const angle = top + i * wedgeAngle;
-            ctx.beginPath();
-            ctx.moveTo(0, 0);
-            ctx.lineTo(Math.cos(angle) * RIM_RADIUS, Math.sin(angle) * RIM_RADIUS);
+            hand.traceSeparator(ctx, i, i * seg);
             ctx.stroke();
         }
     }
-
-    if (hasResult) {
-        // Stroke at double width clipped to the wedge so the full outline sits inside it.
-        const start = top + winnerIndex * wedgeAngle;
-        ctx.save();
-        wedgePath(ctx, start, start + wedgeAngle, RIM_RADIUS);
-        ctx.clip();
-        wedgePath(ctx, start, start + wedgeAngle, RIM_RADIUS);
-        ctx.strokeStyle = ACCENT;
-        ctx.lineWidth = WINNER_OUTLINE * 2;
-        ctx.lineJoin = "round";
-        ctx.stroke();
-        ctx.restore();
-    }
+    hand.traceRim(ctx, RIM_RADIUS);
+    ctx.lineWidth = RIM_STROKE;
+    ctx.lineJoin = "round";
+    ctx.stroke();
     ctx.restore();
 
     ctx.save();
     ctx.translate(WHEEL_SIZE / 2, WHEEL_SIZE / 2);
-    drawHub(ctx, hasResult ? "full" : "plain");
+    drawHub(ctx, input.seed, hasResult ? "full" : "plain");
     ctx.restore();
 
     if (hasResult) drawPill(ctx, items[winnerIndex].name);
@@ -188,13 +196,14 @@ export async function renderDisc(input: DiscRenderInput): Promise<{ blob: Blob; 
     return { blob, width: WHEEL_SIZE, height };
 }
 
-/** Renders the disc a meta describes: its visible items, rotation and result. */
+/** Renders the disc a meta describes: its visible items, rotation, result and wobble. */
 export function renderMeta(meta: DiscMeta): Promise<{ blob: Blob; width: number; height: number }> {
     return renderDisc({
         items: visibleItems(meta),
         rotationDeg: meta.rotationDeg,
         labelDeg: meta.labelDeg,
         winnerIndex: visibleWinnerIndex(meta),
+        seed: meta.seed,
     });
 }
 
@@ -208,27 +217,39 @@ function roundRectPath(ctx: Ctx, x: number, y: number, w: number, h: number, r: 
     ctx.closePath();
 }
 
+/** The prototype's hand-drawn result pill: white, 2px ink border, lime dot, "Picked" and the name. */
 function drawPill(ctx: Ctx, name: string): void {
-    const padX = 14;
-    const gap = 6;
+    const padLeft = 6;
+    const padRight = 12;
+    const gap = 8;
     const label = measureLabel(ctx, "Picked", PILL_LABEL_STEP);
-    const maxNameWidth = WHEEL_SIZE - 2 * padX - label.width - gap - 2;
-    const shown = truncateLabel(ctx, name, PILL_NAME_STEP, maxNameWidth);
+    const fixed = PILL_BORDER * 2 + padLeft + PILL_DOT + gap + label.width + gap + padRight;
+    const shown = truncateLabel(ctx, name, PILL_NAME_STEP, PILL_MAX_WIDTH - fixed);
 
-    const width = padX * 2 + label.width + gap + shown.width;
+    const width = fixed + shown.width;
     const x = (WHEEL_SIZE - width) / 2;
     const y = WHEEL_SIZE + PILL_GAP;
     const cy = y + PILL_HEIGHT / 2;
 
-    roundRectPath(ctx, x + 0.5, y + 0.5, width - 1, PILL_HEIGHT - 1, (PILL_HEIGHT - 1) / 2);
+    const inset = PILL_BORDER / 2;
+    roundRectPath(ctx, x + inset, y + inset, width - PILL_BORDER, PILL_HEIGHT - PILL_BORDER, (PILL_HEIGHT - PILL_BORDER) / 2);
     ctx.fillStyle = PILL_FILL;
     ctx.fill();
-    ctx.strokeStyle = PILL_BORDER;
-    ctx.lineWidth = 1;
+    ctx.strokeStyle = INK_LINE;
+    ctx.lineWidth = PILL_BORDER;
+    ctx.stroke();
+
+    const dotX = x + PILL_BORDER + padLeft + PILL_DOT / 2;
+    ctx.beginPath();
+    ctx.arc(dotX, cy, PILL_DOT / 2 - PILL_BORDER / 2, 0, Math.PI * 2);
+    ctx.fillStyle = ACCENT;
+    ctx.fill();
+    ctx.strokeStyle = INK_LINE;
+    ctx.lineWidth = PILL_BORDER;
     ctx.stroke();
 
     ctx.save();
-    ctx.translate(x + padX, cy);
+    ctx.translate(dotX + PILL_DOT / 2 + gap, cy);
     ctx.fillStyle = PILL_LABEL;
     renderLabel(ctx, label, "left");
     ctx.translate(label.width + gap, 0);
@@ -237,83 +258,27 @@ function drawPill(ctx: Ctx, name: string): void {
     ctx.restore();
 }
 
-const NOTCH_TIP_RADIUS = 3;
-const NOTCH_FILLET_RADIUS = 2;
-/** Where the notch edges would meet if extended into the hub, relative to the hub center. */
-const NOTCH_BASE_Y = -HUB_RADIUS + 4;
+type HubColors = { fill: string; line: string; text: string; cover?: string };
 
-type Point = { x: number; y: number };
+const ACTIVE_HUB: HubColors = { fill: ACCENT, line: INK_LINE, text: INK };
 
 /**
- * Right-side geometry of the notch outline: the sharp apex (placed so the rounded tip
- * keeps NOTCH_HEIGHT), and the fillet that blends the right edge into the hub circle.
- * The left side mirrors it.
+ * Draws the hand-drawn hub centered on the current origin, with the same paths in the disc
+ * image and in the preview, so the two always line up. "plain" is the circle alone; "full"
+ * adds the notch behind it and the label.
  */
-function notchGeometry(): { apex: Point; filletCenter: Point; edgeTangent: Point; hubTangent: Point } {
-    const visibleTipY = -HUB_RADIUS - NOTCH_HEIGHT;
-    // Rounding a corner of half-angle b with radius r moves the tip in by r / sin(b) - r.
-    let apexY = visibleTipY;
-    for (let i = 0; i < 4; i++) {
-        const halfAngle = Math.atan2(NOTCH_HALF_WIDTH, NOTCH_BASE_Y - apexY);
-        apexY = visibleTipY - (NOTCH_TIP_RADIUS / Math.sin(halfAngle) - NOTCH_TIP_RADIUS);
-    }
-    const apex = { x: 0, y: apexY };
-
-    const len = Math.hypot(NOTCH_HALF_WIDTH, NOTCH_BASE_Y - apexY);
-    const d = { x: NOTCH_HALF_WIDTH / len, y: (NOTCH_BASE_Y - apexY) / len };
-    // Outward normal of the right edge.
-    const n = { x: d.y, y: -d.x };
-    const f = NOTCH_FILLET_RADIUS;
-    // Fillet center: f away from the edge line, R + f from the hub center.
-    const p = { x: apex.x + f * n.x, y: apex.y + f * n.y };
-    const b = p.x * d.x + p.y * d.y;
-    const c = p.x * p.x + p.y * p.y - (HUB_RADIUS + f) ** 2;
-    const t = -b - Math.sqrt(b * b - c);
-    const filletCenter = { x: p.x + t * d.x, y: p.y + t * d.y };
-    const edgeTangent = { x: apex.x + t * d.x, y: apex.y + t * d.y };
-    const k = HUB_RADIUS / (HUB_RADIUS + f);
-    const hubTangent = { x: filletCenter.x * k, y: filletCenter.y * k };
-    return { apex, filletCenter, edgeTangent, hubTangent };
-}
-
-/** One closed outline: hub circle, filleted notch base, rounded notch tip. */
-function hubOutline(ctx: Ctx): void {
-    const { apex, filletCenter: cr, edgeTangent: er, hubTangent: hr } = notchGeometry();
-    const cl = { x: -cr.x, y: cr.y };
-    const el = { x: -er.x, y: er.y };
-    const hl = { x: -hr.x, y: hr.y };
-    const angle = (from: Point, to: Point) => Math.atan2(to.y - from.y, to.x - from.x);
-
-    ctx.beginPath();
-    ctx.moveTo(er.x, er.y);
-    ctx.arc(cr.x, cr.y, NOTCH_FILLET_RADIUS, angle(cr, er), angle(cr, hr), true);
-    ctx.arc(0, 0, HUB_RADIUS, Math.atan2(hr.y, hr.x), Math.atan2(hl.y, hl.x) + 2 * Math.PI, false);
-    ctx.arc(cl.x, cl.y, NOTCH_FILLET_RADIUS, angle(cl, hl), angle(cl, el), true);
-    ctx.arcTo(apex.x, apex.y, er.x, er.y, NOTCH_TIP_RADIUS);
-    ctx.closePath();
-}
-
-type HubColors = { fill: string; line: string; text: string };
-
-const ACTIVE_HUB: HubColors = { fill: ACCENT, line: INK, text: INK };
-
-/**
- * Draws the hub centered on the current origin. "plain" is the lime circle alone; "full"
- * adds the notch and the label.
- */
-function drawHub(ctx: Ctx, style: "plain" | "full", label = "Spin", colors: HubColors = ACTIVE_HUB): void {
+function drawHub(ctx: Ctx, seed: number, style: "plain" | "full", label = "Spin", colors: HubColors = ACTIVE_HUB): void {
+    ctx.lineJoin = "round";
     if (style === "full") {
-        hubOutline(ctx);
-    } else {
-        ctx.beginPath();
-        ctx.arc(0, 0, HUB_RADIUS, 0, Math.PI * 2);
+        traceNotch(ctx, HUB_RADIUS);
+        ctx.fillStyle = colors.fill;
+        ctx.fill();
+        strokeCovering(ctx, NOTCH_STROKE, colors);
     }
+    traceHandCircle(ctx, HUB_RADIUS, seed + HUB_SEED_OFFSET, HUB_WOBBLE);
     ctx.fillStyle = colors.fill;
     ctx.fill();
-    ctx.lineWidth = HUB_STROKE;
-    ctx.strokeStyle = colors.line;
-    ctx.lineJoin = "round";
-    ctx.stroke();
+    strokeCovering(ctx, HUB_CIRCLE_STROKE, colors);
     if (style === "full") {
         ctx.fillStyle = colors.text;
         renderLabel(ctx, measureLabel(ctx, label, HUB_LABEL));
@@ -321,10 +286,25 @@ function drawHub(ctx: Ctx, style: "plain" | "full", label = "Spin", colors: HubC
 }
 
 /**
+ * Strokes the current path. A translucent line is first laid over an opaque cover so it
+ * hides the ink of the baked hub under the preview.
+ */
+function strokeCovering(ctx: Ctx, width: number, colors: HubColors): void {
+    ctx.lineWidth = width + 0.5;
+    if (colors.cover) {
+        ctx.strokeStyle = colors.cover;
+        ctx.stroke();
+    }
+    ctx.lineWidth = width;
+    ctx.strokeStyle = colors.line;
+    ctx.stroke();
+}
+
+/**
  * Renders the interactive hub shown as a preview element, at the given opacity. The preview
  * is drawn by each client, so the disabled style follows that client's theme tokens.
  */
-export async function renderHub(alpha = 1, state: HubState = "spin"): Promise<Blob> {
+export async function renderHub(alpha: number, state: HubState, seed: number): Promise<Blob> {
     await loadFonts();
     const canvas = new OffscreenCanvas(HUB_WIDTH * PIXEL_RATIO, HUB_HEIGHT * PIXEL_RATIO);
     const ctx = canvas.getContext("2d") as Ctx;
@@ -332,13 +312,15 @@ export async function renderHub(alpha = 1, state: HubState = "spin"): Promise<Bl
     ctx.translate(HUB_WIDTH / 2, HUB_CENTER_Y);
     ctx.globalAlpha = alpha;
     if (state === "disabled") {
-        drawHub(ctx, "full", "Spin", {
-            fill: token("--dd-surface-elevated", "#FFFFFF"),
-            line: token("--dd-border-medium", "rgba(0,0,0,0.10)"),
+        const elevated = token("--dd-surface-elevated", "#FFFFFF");
+        drawHub(ctx, seed, "full", "Spin", {
+            fill: elevated,
+            line: token("--dd-border-subtle", "rgba(0,0,0,0.10)"),
             text: token("--dd-text-disabled", "rgba(0,0,0,0.30)"),
+            cover: elevated,
         });
     } else {
-        drawHub(ctx, "full", state === "reset" ? "Reset" : "Spin");
+        drawHub(ctx, seed, "full", state === "reset" ? "Reset" : "Spin");
     }
     return canvas.convertToBlob({ type: "image/png" });
 }

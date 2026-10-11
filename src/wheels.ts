@@ -1,6 +1,6 @@
 import type { SubscribedDrawdyElement } from "@drawdy/driver-protocol";
 import { call, generateId, sleep, unwrap } from "./host";
-import { discForHubElement, hubStateOf, isSuppressed, rekeyHub, releaseHub, removeHub, suppressHub, syncHubs } from "./hubs";
+import { discForHubElement, hubLookOf, isSuppressed, rekeyHub, releaseHub, removeHub, suppressHub, syncHubs, type HubLook } from "./hubs";
 import {
     HUB_RADIUS,
     META_KEY,
@@ -20,6 +20,7 @@ import {
 import { cryptoRandom } from "./random";
 import { isLeftHalf, renderMeta } from "./render";
 import { pickSpin } from "./spin-math";
+import { seedFrom } from "./hand";
 import { debug, error, log } from "./log";
 
 const SPIN_DURATION_MS = 3500;
@@ -283,7 +284,7 @@ async function refresh(): Promise<void> {
     const shown = owners.filter((d) => !isBusy(d.meta.wheelId) && !isSuppressed(d.id));
     const keepBusy = (discId: string) => discs.some((d) => d.id === discId && isBusy(d.meta.wheelId));
     await syncHubs(
-        shown.map((d) => ({ id: d.id, rect: d.rect, state: hubState(d.meta) })),
+        shown.map((d) => ({ id: d.id, rect: d.rect, look: lookOf(d.meta) })),
         keepBusy
     );
 
@@ -366,9 +367,11 @@ export async function addWheel(items: WheelItem[]): Promise<string> {
     const { rect: viewport } = unwrap(await call({ type: "command:camera:get-viewport-rect" }));
     const { discs } = await queryBoard();
 
+    const wheelId = generateId();
     const meta: DiscMeta = {
         role: "disc",
-        wheelId: generateId(),
+        wheelId,
+        seed: seedFrom(wheelId),
         version: 1,
         items,
         rotationDeg: 0,
@@ -413,7 +416,7 @@ async function addReplacement(like: Disc, meta: DiscMeta): Promise<Disc> {
         await call({ type: "command:scene:update-drawdy-elements", req: { updates: [{ drawdyElementId: id, properties: { locked: true } }] } });
     }
     metaOfDisc.set(id, meta);
-    await rekeyHub(like.id, id, rect, hubState(meta));
+    await rekeyHub(like.id, id, rect, lookOf(meta));
     // A freshly added element is drawn on top of everything.
     return { id, meta, rect, locked: like.locked, frameId: like.frameId, z: Number.MAX_SAFE_INTEGER };
 }
@@ -622,7 +625,7 @@ export async function onDragEnd(): Promise<void> {
     for (const id of hidden) {
         const rect = rects.find((r) => r.drawdyElementId === id)?.rect ?? null;
         if (rect) lastRect.set(id, rect);
-        await releaseHub(id, rect, stateOfDisc(id));
+        await releaseHub(id, rect, lookOfDisc(id));
     }
     scheduleRefresh();
 }
@@ -656,7 +659,7 @@ export async function onDiscUpdated(el: SubscribedDrawdyElement): Promise<void> 
         el.id,
         setTimeout(() => {
             resizeTimers.delete(el.id);
-            void releaseHub(el.id, lastRect.get(el.id) ?? null, stateOfDisc(el.id)).then(scheduleRefresh);
+            void releaseHub(el.id, lastRect.get(el.id) ?? null, lookOfDisc(el.id)).then(scheduleRefresh);
         }, RESIZE_SETTLE_MS)
     );
 }
@@ -684,9 +687,14 @@ export function onSelection(ids: readonly string[]): void {
     for (const fn of selectionListeners) fn();
 }
 
-function stateOfDisc(discId: string) {
+function lookOf(meta: DiscMeta): HubLook {
+    return { state: hubState(meta), seed: meta.seed };
+}
+
+function lookOfDisc(discId: string): HubLook {
     const meta = metaOfDisc.get(discId);
-    return meta ? hubState(meta) : hubStateOf(discId) ?? "spin";
+    if (meta) return lookOf(meta);
+    return hubLookOf(discId) ?? { state: "spin", seed: 0 };
 }
 
 /** The wheelIds of the selected discs, read from the board. */
@@ -736,7 +744,7 @@ export async function writeWheel(wheelId: string, change: (meta: DiscMeta) => Di
                 req: { updates: [{ drawdyElementId: disc.id, properties: { meta: { [META_KEY]: next } } }] },
             });
             metaOfDisc.set(disc.id, next);
-            await rekeyHub(disc.id, disc.id, disc.rect, hubState(next));
+            await rekeyHub(disc.id, disc.id, disc.rect, lookOf(next));
             return "done";
         }
 

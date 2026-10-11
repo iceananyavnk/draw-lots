@@ -1,21 +1,27 @@
+import { seedFrom } from "./hand";
+
 /** Logical wheel geometry, in canvas units at scale 1. */
-export const WHEEL_SIZE = 300;
 export const RIM_RADIUS = 146;
+/** Room around the rim for its hand-drawn wobble (up to about 5) and half its 2.8 stroke. */
+export const RIM_MARGIN = 8;
+/** Side of the disc image; the wheel center is at its middle. */
+export const WHEEL_SIZE = 2 * (RIM_RADIUS + RIM_MARGIN);
 export const HUB_RADIUS = 38;
 export const PIXEL_RATIO = 2;
 
 /** Hub image layout: the circle plus the notch above it. */
 export const NOTCH_HEIGHT = 14;
-export const NOTCH_HALF_WIDTH = 10;
-export const HUB_PAD = 2;
+/** Room around the hub for its hand-drawn wobble and stroke. */
+export const HUB_PAD = 5;
 export const HUB_WIDTH = 2 * (HUB_RADIUS + HUB_PAD);
 /** Distance from the top of the hub image to the hub center. */
 export const HUB_CENTER_Y = HUB_RADIUS + NOTCH_HEIGHT + HUB_PAD;
 export const HUB_HEIGHT = HUB_CENTER_Y + HUB_RADIUS + HUB_PAD;
 
 /** Result pill below the wheel. */
-export const PILL_GAP = 12;
-export const PILL_HEIGHT = 36;
+/** The pill sits 14 below the wheel's 300 box, as in the prototype: 150 + 14 from the center. */
+export const PILL_GAP = 164 - (RIM_RADIUS + RIM_MARGIN);
+export const PILL_HEIGHT = 44;
 export const RESULT_HEIGHT = WHEEL_SIZE + PILL_GAP + PILL_HEIGHT;
 
 export const MIN_ITEMS = 2;
@@ -45,6 +51,8 @@ export type DiscMeta = {
     picked: string[];
     /** Picked items leave the wheel at the start of the next spin. */
     removePicked: boolean;
+    /** Seed of the hand-drawn wobble: derived from the wheelId at creation and kept by copies. */
+    seed: number;
 };
 
 export type Rect = { x: number; y: number; width: number; height: number };
@@ -75,6 +83,7 @@ function normalizeMeta(raw: Record<string, unknown>): DiscMeta | null {
         winnerId: winnerId && known.has(winnerId) ? winnerId : null,
         picked: Array.isArray(raw.picked) ? raw.picked.filter((id): id is string => typeof id === "string" && known.has(id)) : [],
         removePicked: typeof raw.removePicked === "boolean" ? raw.removePicked : true,
+        seed: typeof raw.seed === "number" ? raw.seed : seedFrom(raw.wheelId),
     };
 }
 

@@ -33,7 +33,6 @@ svg { display: block; }
     line-height: var(--dd-type-heading-line, 20px);
     font-weight: var(--dd-type-heading-weight, 600);
 }
-.headR { display: flex; align-items: baseline; gap: var(--dd-space-8, 8px); }
 .count { font-size: var(--dd-type-caption-size, 11px); line-height: var(--dd-type-caption-line, 16px); color: var(--dd-text-tertiary, rgba(0,0,0,.5)); font-variant-numeric: tabular-nums; }
 
 .input {
@@ -49,13 +48,13 @@ svg { display: block; }
 .input:disabled { color: var(--dd-text-disabled, rgba(0,0,0,.3)); cursor: not-allowed; }
 .hint { margin: 0; font-size: var(--dd-type-caption-size, 11px); line-height: var(--dd-type-caption-line, 16px); color: var(--dd-text-tertiary, rgba(0,0,0,.5)); }
 
-.picks { display: flex; align-items: center; justify-content: space-between; gap: var(--dd-space-8, 8px); }
+.picks { display: flex; align-items: center; }
 .switch { display: inline-flex; align-items: center; gap: var(--dd-space-8, 8px); border: 0; background: none; padding: 2px; border-radius: var(--dd-radius-sm, 4px); cursor: pointer;
     font-size: var(--dd-type-label-size, 12px); line-height: var(--dd-type-label-line, 16px); font-weight: var(--dd-type-label-weight, 500); color: var(--dd-text-secondary, rgba(0,0,0,.7)); }
 .switch .track { position: relative; width: 28px; height: 16px; border-radius: var(--dd-radius-full, 999px); background: var(--dl-switch-off, #71717A); flex: none; transition: background 120ms; }
-.switch .thumb { position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: #FFFFFF; transition: transform 120ms; }
+.switch .thumb { position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: #FFFFFF; border: 1px solid rgba(0,0,0,0.2); transition: transform 120ms; }
 .switch[aria-checked="true"] .track { background: var(--dd-accent, #C5F601); }
-.switch[aria-checked="true"] .thumb { transform: translateX(12px); background: var(--dd-on-accent, #090909); }
+.switch[aria-checked="true"] .thumb { transform: translateX(12px); }
 
 .list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; overflow-y: auto; flex: 1; min-height: 80px; }
 .list li { display: flex; align-items: center; gap: var(--dd-space-6, 6px); padding: var(--dd-space-4, 4px); border-radius: var(--dd-radius-md, 6px); }
@@ -74,7 +73,8 @@ li.picked .nm { color: var(--dd-text-tertiary, rgba(0,0,0,.5)); }
 @media (hover: none) { .x { opacity: 1; } }
 .empty { color: var(--dd-text-tertiary, rgba(0,0,0,.5)); padding: var(--dd-space-8, 8px) var(--dd-space-4, 4px); }
 
-.listfoot { display: flex; justify-content: flex-end; }
+.listfoot { display: flex; justify-content: flex-end; align-items: center; gap: var(--dd-space-6, 6px); }
+.vdivider { width: 1px; height: 12px; background: var(--dd-divider-strong, rgba(0,0,0,.12)); }
 .textbtn { border: 0; background: none; color: var(--dd-text-tertiary, rgba(0,0,0,.5)); cursor: pointer; padding: 2px var(--dd-space-4, 4px); border-radius: var(--dd-radius-sm, 4px);
     font-size: var(--dd-type-label-size, 12px); line-height: var(--dd-type-label-line, 16px); font-weight: var(--dd-type-label-weight, 500); }
 .textbtn:hover { color: var(--dd-text-primary, rgba(0,0,0,.95)); background: var(--dd-interaction-hover, rgba(0,0,0,.04)); }
@@ -98,7 +98,7 @@ li.picked .nm { color: var(--dd-text-tertiary, rgba(0,0,0,.5)); }
 <main class="panel" aria-label="Draw Lots">
     <div class="head">
         <h1 id="title">New wheel</h1>
-        <div class="headR"><span class="count" id="count"></span><button class="textbtn" id="newWheel" hidden>New wheel</button></div>
+        <span class="count" id="count"></span>
     </div>
     <p class="notice" id="notice" role="alert" hidden></p>
     <div id="editor">
@@ -107,10 +107,13 @@ li.picked .nm { color: var(--dd-text-tertiary, rgba(0,0,0,.5)); }
     <p class="hint" id="limitHint" hidden>Up to 20 items</p>
     <div class="picks" id="picks" hidden>
         <button class="switch" id="removePicked" role="switch" aria-checked="true"><span class="track"><span class="thumb"></span></span>Remove picked names</button>
-        <button class="textbtn" id="resetPicked" hidden>Reset</button>
     </div>
     <ul class="list" id="list" aria-label="Items"></ul>
-    <div class="listfoot" id="listFoot"><button class="textbtn" id="clearAll">Clear all</button></div>
+    <div class="listfoot" id="listFoot">
+        <button class="textbtn" id="resetPicked" hidden>Reset picks</button>
+        <span class="vdivider" id="resetDivider" aria-hidden="true" hidden></span>
+        <button class="textbtn" id="clearAll">Clear all</button>
+    </div>
     <div class="foot" id="foot">
         <div class="status" id="status" role="status" aria-live="polite"><span class="d"></span><span id="statusText">Wheel is up to date</span></div>
         <button class="primary" id="addWheel">Add wheel to board</button>
@@ -151,7 +154,6 @@ li.picked .nm { color: var(--dd-text-tertiary, rgba(0,0,0,.5)); }
         (state.picked || []).forEach(function (id) { picked[id] = true; });
 
         $("title").textContent = edit ? "Editing wheel" : "New wheel";
-        $("newWheel").hidden = !edit;
         $("count").textContent = items.length === 0 ? "" : items.length + (items.length === 1 ? " item" : " items");
 
         var full = items.length >= state.max;
@@ -160,7 +162,9 @@ li.picked .nm { color: var(--dd-text-tertiary, rgba(0,0,0,.5)); }
 
         $("picks").hidden = !edit;
         $("removePicked").setAttribute("aria-checked", String(!!state.removePicked));
-        $("resetPicked").hidden = !(edit && state.picked && state.picked.length > 0);
+        var anyPicked = edit && state.picked && state.picked.length > 0;
+        $("resetPicked").hidden = !anyPicked;
+        $("resetDivider").hidden = !anyPicked;
 
         list.innerHTML = "";
         items.forEach(function (it) {
@@ -288,7 +292,6 @@ li.picked .nm { color: var(--dd-text-tertiary, rgba(0,0,0,.5)); }
     });
     $("resetPicked").addEventListener("click", function () { send({ type: "resetPicked" }); });
     $("addWheel").addEventListener("click", function () { send({ type: "addWheel" }); });
-    $("newWheel").addEventListener("click", function () { send({ type: "newWheel" }); input.focus(); });
 
     api.onMessage(function (msg) {
         if (!msg || typeof msg !== "object") return;

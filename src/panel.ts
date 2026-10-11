@@ -38,8 +38,7 @@ type PanelMessage =
     | { type: "clear" }
     | { type: "setRemovePicked"; value: boolean }
     | { type: "resetPicked" }
-    | { type: "addWheel" }
-    | { type: "newWheel" };
+    | { type: "addWheel" };
 
 /** A change waiting to be written to the target wheel. */
 type Change = (meta: DiscMeta) => DiscMeta;
@@ -49,8 +48,8 @@ let mode: Mode = "draft";
 let draft: WheelItem[] = [];
 /**
  * The current wheel the panel edits, by wheelId so swaps and spins keep it. It changes only
- * when a single wheel is selected, a wheel is added from the panel, "New wheel" is pressed,
- * or the wheel leaves the board. Per client and session; nothing is stored.
+ * when a single wheel is selected, a wheel is added from the panel, or the wheel leaves the
+ * board (then the draft shows). Per client and session; nothing is stored.
  */
 let target: string | null = null;
 /** Set while "Add wheel to board" runs, so the new wheel's selection binds the panel to it. */
@@ -309,10 +308,6 @@ export async function onPanelMessage(raw: unknown): Promise<void> {
             }
             return;
         }
-        case "newWheel":
-            log("panel unbound: New wheel", { wheelId: target });
-            await setTarget("draft", null);
-            return;
     }
 }
 

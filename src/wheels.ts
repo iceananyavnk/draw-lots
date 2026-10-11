@@ -22,7 +22,7 @@ import { isLeftHalf, renderMeta } from "./render";
 import { pickSpin } from "./spin-math";
 import { easeOutQuart, type SpinSchedule } from "./spin-schedule";
 import { seedFrom } from "./hand";
-import { debug, error, log } from "./log";
+import { DEBUG, debug, error, log } from "./log";
 
 const SPIN_DURATION_MS = 3500;
 const FRAME_MS = 16;
@@ -213,7 +213,7 @@ function stackOwners(discs: Disc[]): Disc[] {
     return discs.filter((d) => {
         const stack = stackOf(d, discs);
         const owner = topOf([d, ...stack]);
-        if (owner.id === d.id && stack.length > 0) {
+        if (DEBUG && owner.id === d.id && stack.length > 0) {
             debug("stack", { owner: d.id, members: [d, ...stack].map((m) => ({ id: m.id, version: m.meta.version, z: m.z })) });
         }
         return owner.id === d.id;

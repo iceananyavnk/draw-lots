@@ -10,8 +10,15 @@ function serialize(details: unknown): string {
     );
 }
 
-/** Every log is one line: the prefix, a message, and the details as JSON. */
-export const log = (message: string, details?: unknown) => console.info(`${PREFIX} ${message}${serialize(details)}`);
-export const debug = (message: string, details?: unknown) => console.debug(`${PREFIX} ${message}${serialize(details)}`);
+/** Verbose tracing (disc classification, stacks, spin targets, hub animation, panel binding). Off in production. */
+export const DEBUG = false;
+
+/** Every log is one line: the prefix, a message, and the details as JSON. `log` and `debug` print only with DEBUG. */
+export const log = (message: string, details?: unknown) => {
+    if (DEBUG) console.info(`${PREFIX} ${message}${serialize(details)}`);
+};
+export const debug = (message: string, details?: unknown) => {
+    if (DEBUG) console.debug(`${PREFIX} ${message}${serialize(details)}`);
+};
 export const warn = (message: string, details?: unknown) => console.warn(`${PREFIX} ${message}${serialize(details)}`);
 export const error = (message: string, details?: unknown) => console.error(`${PREFIX} ${message}${serialize(details)}`);

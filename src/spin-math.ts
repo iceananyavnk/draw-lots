@@ -34,8 +34,3 @@ export function pickSpin(count: number, startDeg: number, random: RandomSource):
     const deltaDeg = turns * 360 + normalizeDeg(finalDeg - startDeg);
     return { winnerIndex, offset, turns, finalDeg, deltaDeg };
 }
-
-/** Index of the wedge under the notch for a clockwise disc rotation. */
-export function wedgeAtNotch(count: number, rotationDeg: number): number {
-    return Math.floor(normalizeDeg(-rotationDeg) / (360 / count)) % count;
-}

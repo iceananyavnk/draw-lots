@@ -1,4 +1,5 @@
 import { loadFonts } from "./fonts";
+import { token } from "./host";
 import { fitLabel, measureLabel, renderLabel, truncateLabel, type TextStep } from "./labels";
 import {
     HUB_CENTER_Y,
@@ -14,6 +15,10 @@ import {
     RIM_RADIUS,
     WHEEL_SIZE,
     normalizeDeg,
+    visibleItems,
+    visibleWinnerIndex,
+    type DiscMeta,
+    type HubState,
     type WheelItem,
 } from "./model";
 
@@ -134,9 +139,10 @@ export async function renderDisc(input: DiscRenderInput): Promise<{ blob: Blob; 
         if (!item) continue;
         const layout = fitLabel(ctx, item.name, WEDGE_STEPS, maxWidth, maxThickness);
         ctx.save();
-        ctx.rotate(start + wedgeAngle / 2);
+        // A single item fills the disc; its label sits on the radius toward 12 o'clock.
+        ctx.rotate(count === 1 ? top : start + wedgeAngle / 2);
         ctx.translate(midRadius, 0);
-        if (isLeftHalf(i, count, labelDeg)) ctx.rotate(Math.PI);
+        if (count > 1 && isLeftHalf(i, count, labelDeg)) ctx.rotate(Math.PI);
         ctx.fillStyle = WEDGE_TEXT;
         renderLabel(ctx, layout);
         ctx.restore();
@@ -180,6 +186,16 @@ export async function renderDisc(input: DiscRenderInput): Promise<{ blob: Blob; 
 
     const blob = await canvas.convertToBlob({ type: "image/png" });
     return { blob, width: WHEEL_SIZE, height };
+}
+
+/** Renders the disc a meta describes: its visible items, rotation and result. */
+export function renderMeta(meta: DiscMeta): Promise<{ blob: Blob; width: number; height: number }> {
+    return renderDisc({
+        items: visibleItems(meta),
+        rotationDeg: meta.rotationDeg,
+        labelDeg: meta.labelDeg,
+        winnerIndex: visibleWinnerIndex(meta),
+    });
 }
 
 function roundRectPath(ctx: Ctx, x: number, y: number, w: number, h: number, r: number): void {
@@ -277,37 +293,52 @@ function hubOutline(ctx: Ctx): void {
     ctx.closePath();
 }
 
+type HubColors = { fill: string; line: string; text: string };
+
+const ACTIVE_HUB: HubColors = { fill: ACCENT, line: INK, text: INK };
+
 /**
- * Draws the hub centered on the current origin. "plain" is the lime circle alone;
- * "full" adds the notch and the "Spin" label.
+ * Draws the hub centered on the current origin. "plain" is the lime circle alone; "full"
+ * adds the notch and the label.
  */
-function drawHub(ctx: Ctx, style: "plain" | "full"): void {
+function drawHub(ctx: Ctx, style: "plain" | "full", label = "Spin", colors: HubColors = ACTIVE_HUB): void {
     if (style === "full") {
         hubOutline(ctx);
     } else {
         ctx.beginPath();
         ctx.arc(0, 0, HUB_RADIUS, 0, Math.PI * 2);
     }
-    ctx.fillStyle = ACCENT;
+    ctx.fillStyle = colors.fill;
     ctx.fill();
     ctx.lineWidth = HUB_STROKE;
-    ctx.strokeStyle = INK;
+    ctx.strokeStyle = colors.line;
     ctx.lineJoin = "round";
     ctx.stroke();
     if (style === "full") {
-        ctx.fillStyle = INK;
-        renderLabel(ctx, measureLabel(ctx, "Spin", HUB_LABEL));
+        ctx.fillStyle = colors.text;
+        renderLabel(ctx, measureLabel(ctx, label, HUB_LABEL));
     }
 }
 
-/** Renders the interactive hub shown as a preview element, at the given opacity. */
-export async function renderHub(alpha = 1): Promise<Blob> {
+/**
+ * Renders the interactive hub shown as a preview element, at the given opacity. The preview
+ * is drawn by each client, so the disabled style follows that client's theme tokens.
+ */
+export async function renderHub(alpha = 1, state: HubState = "spin"): Promise<Blob> {
     await loadFonts();
     const canvas = new OffscreenCanvas(HUB_WIDTH * PIXEL_RATIO, HUB_HEIGHT * PIXEL_RATIO);
     const ctx = canvas.getContext("2d") as Ctx;
     ctx.scale(PIXEL_RATIO, PIXEL_RATIO);
     ctx.translate(HUB_WIDTH / 2, HUB_CENTER_Y);
     ctx.globalAlpha = alpha;
-    drawHub(ctx, "full");
+    if (state === "disabled") {
+        drawHub(ctx, "full", "Spin", {
+            fill: token("--dd-surface-elevated", "#FFFFFF"),
+            line: token("--dd-border-medium", "rgba(0,0,0,0.10)"),
+            text: token("--dd-text-disabled", "rgba(0,0,0,0.30)"),
+        });
+    } else {
+        drawHub(ctx, "full", state === "reset" ? "Reset" : "Spin");
+    }
     return canvas.convertToBlob({ type: "image/png" });
 }

@@ -1,6 +1,6 @@
 import type { SubscribedDrawdyElement } from "@drawdy/driver-protocol";
 import { call, generateId, sleep, unwrap } from "./host";
-import { discForHubElement, isSuppressed, rekeyHub, releaseHub, removeHub, suppressHub, syncHubs } from "./hubs";
+import { discForHubElement, hubStateOf, isSuppressed, rekeyHub, releaseHub, removeHub, suppressHub, syncHubs } from "./hubs";
 import {
     HUB_RADIUS,
     META_KEY,
@@ -8,13 +8,17 @@ import {
     WHEEL_SIZE,
     discCenter,
     discScale,
+    hubState,
     readMeta,
+    spinnableItems,
+    visibleItems,
+    visibleWinnerIndex,
     type DiscMeta,
     type Rect,
     type WheelItem,
 } from "./model";
 import { cryptoRandom } from "./random";
-import { isLeftHalf, renderDisc } from "./render";
+import { isLeftHalf, renderMeta } from "./render";
 import { pickSpin } from "./spin-math";
 import { debug, error, log } from "./log";
 
@@ -27,6 +31,8 @@ const CLICK_GUARD_MS = 500;
 const REFRESH_DELAY_MS = 50;
 const RESIZE_SETTLE_MS = 150;
 const PLACEMENT_GAP = 40;
+/** Selection events this soon after this driver changed the selection are its own echo. */
+const OWN_SELECTION_MS = 600;
 const STACK_EPSILON = 1;
 
 
@@ -59,6 +65,40 @@ const knownSpots = new Map<string, { x: number; y: number }[]>();
 const pendingAppeared = new Set<string>();
 /** wheelIds with a spin in progress on this client. */
 const spinning = new Set<string>();
+/** wheelIds with a list change being written by this client. */
+const writing = new Set<string>();
+/** Disc ids this client is removing, so their removal is not taken for a user delete. */
+const ownRemovals = new Set<string>();
+const metaOfDisc = new Map<string, DiscMeta>();
+let ownSelectionUntil = 0;
+
+/** A disc as the panel sees it. */
+export type WheelView = { discId: string; meta: DiscMeta; selected: boolean };
+type BoardListener = (wheels: WheelView[]) => void;
+const boardListeners: BoardListener[] = [];
+const selectionListeners: (() => void)[] = [];
+
+/** Called after every board refresh with the top disc of every wheel. */
+export function onBoardChanged(fn: BoardListener): void {
+    boardListeners.push(fn);
+}
+
+export function onSelectionChanged(fn: () => void): void {
+    selectionListeners.push(fn);
+}
+
+export function isBusy(wheelId: string): boolean {
+    return spinning.has(wheelId) || writing.has(wheelId);
+}
+
+/** True while a selection change this driver made (clear for a spin, reselect after a swap) is echoing back. */
+export function isOwnSelectionChange(): boolean {
+    return Date.now() < ownSelectionUntil;
+}
+
+function quietSelection(): void {
+    ownSelectionUntil = Date.now() + OWN_SELECTION_MS;
+}
 let notify: (text: string) => void = () => {};
 
 export function setNotifier(fn: (text: string) => void): void {
@@ -123,7 +163,9 @@ async function removeElements(elements: { id: string; locked: boolean }[]): Prom
             req: { updates: locked.map((el) => ({ drawdyElementId: el.id, properties: { locked: false } })) },
         });
     }
-    await call({ type: "command:scene:remove-drawdy-elements", req: { drawdyElementIds: elements.map((el) => el.id) } });
+    const ids = elements.map((el) => el.id);
+    ids.forEach((id) => ownRemovals.add(id));
+    await call({ type: "command:scene:remove-drawdy-elements", req: { drawdyElementIds: ids } });
 }
 
 const isStacked = (a: { x: number; y: number }, b: { x: number; y: number }) => Math.abs(a.x - b.x) < STACK_EPSILON && Math.abs(a.y - b.y) < STACK_EPSILON;
@@ -233,12 +275,20 @@ async function refresh(): Promise<void> {
     for (const d of discs) {
         lastRect.set(d.id, d.rect);
         wheelOfDisc.set(d.id, d.meta.wheelId);
+        metaOfDisc.set(d.id, d.meta);
         rememberSpot(d.meta.wheelId, d.rect);
     }
-    // Every disc gets exactly one hub, centred on it; spinning wheels manage their own.
-    const shown = stackOwners(discs).filter((d) => !spinning.has(d.meta.wheelId) && !isSuppressed(d.id));
-    const keepSpinning = (discId: string) => discs.some((d) => d.id === discId && spinning.has(d.meta.wheelId));
-    await syncHubs(shown, keepSpinning);
+    // The top disc of every stack gets exactly one hub, centred on it; busy wheels manage their own.
+    const owners = stackOwners(discs);
+    const shown = owners.filter((d) => !isBusy(d.meta.wheelId) && !isSuppressed(d.id));
+    const keepBusy = (discId: string) => discs.some((d) => d.id === discId && isBusy(d.meta.wheelId));
+    await syncHubs(
+        shown.map((d) => ({ id: d.id, rect: d.rect, state: hubState(d.meta) })),
+        keepBusy
+    );
+
+    const views = owners.map((d) => ({ discId: d.id, meta: d.meta, selected: selection.has(d.id) }));
+    for (const fn of boardListeners) fn(views);
 }
 
 type Decision = "own" | "restore" | "swap" | "new" | "copy";
@@ -308,13 +358,25 @@ function discElement(id: string, rect: Rect, blob: Blob, meta: DiscMeta, frameId
     return { type: "image" as const, drawdyElementId: id, ...rect, blob, meta: { [META_KEY]: meta }, ...(frameId ? { frameId } : {}) };
 }
 
-/** Places a new wheel at the viewport center, shifted right past any wheel it would overlap. */
-export async function addWheel(items: WheelItem[]): Promise<void> {
+/**
+ * Places a new wheel at the viewport center, shifted right past any wheel it would overlap,
+ * and selects it. This is the only place a placement offset is applied.
+ */
+export async function addWheel(items: WheelItem[]): Promise<string> {
     const { rect: viewport } = unwrap(await call({ type: "command:camera:get-viewport-rect" }));
     const { discs } = await queryBoard();
 
-    const meta: DiscMeta = { role: "disc", wheelId: generateId(), version: 1, items, rotationDeg: 0, winnerIndex: null };
-    const image = await renderDisc(meta);
+    const meta: DiscMeta = {
+        role: "disc",
+        wheelId: generateId(),
+        version: 1,
+        items,
+        rotationDeg: 0,
+        winnerId: null,
+        picked: [],
+        removePicked: true,
+    };
+    const image = await renderMeta(meta);
     const rect: Rect = {
         x: viewport.x + viewport.width / 2 - WHEEL_SIZE / 2,
         y: viewport.y + viewport.height / 2 - WHEEL_SIZE / 2,
@@ -330,7 +392,9 @@ export async function addWheel(items: WheelItem[]): Promise<void> {
     noteAppeared([id]);
     unwrap(await call({ type: "command:scene:add-drawdy-elements", req: { elements: [discElement(id, rect, image.blob, meta)] } }));
     log("added wheel", { wheelId: meta.wheelId, discId: id, rect });
+    await call({ type: "command:scene:set-selection", req: { drawdyElementIds: [id] } });
     scheduleRefresh();
+    return id;
 }
 
 /**
@@ -339,7 +403,7 @@ export async function addWheel(items: WheelItem[]): Promise<void> {
  */
 async function addReplacement(like: Disc, meta: DiscMeta): Promise<Disc> {
     const scale = discScale(like.rect);
-    const image = await renderDisc(meta);
+    const image = await renderMeta(meta);
     const rect: Rect = { x: like.rect.x, y: like.rect.y, width: image.width * scale, height: image.height * scale };
     const id = generateId();
     ownAdds.add(id);
@@ -348,7 +412,8 @@ async function addReplacement(like: Disc, meta: DiscMeta): Promise<Disc> {
     if (like.locked) {
         await call({ type: "command:scene:update-drawdy-elements", req: { updates: [{ drawdyElementId: id, properties: { locked: true } }] } });
     }
-    await rekeyHub(like.id, id, rect);
+    metaOfDisc.set(id, meta);
+    await rekeyHub(like.id, id, rect, hubState(meta));
     // A freshly added element is drawn on top of everything.
     return { id, meta, rect, locked: like.locked, frameId: like.frameId, z: Number.MAX_SAFE_INTEGER };
 }
@@ -390,8 +455,8 @@ export async function spinFromClick(trigger: SpinTrigger): Promise<void> {
         return;
     }
     const wheelId = disc.meta.wheelId;
-    if (spinning.has(wheelId)) {
-        log("spin ignored: already spinning", { wheelId });
+    if (isBusy(wheelId)) {
+        log("spin ignored: wheel busy", { wheelId, spinning: spinning.has(wheelId), writing: writing.has(wheelId) });
         return;
     }
     const c = discCenter(disc.rect);
@@ -399,8 +464,15 @@ export async function spinFromClick(trigger: SpinTrigger): Promise<void> {
         log("spin ignored: click outside the hub circle", trigger);
         return;
     }
-    if (disc.meta.items.length < MIN_ITEMS) {
-        log("spin ignored: too few items", { min: MIN_ITEMS, items: disc.meta.items.length });
+    const state = hubState(disc.meta);
+    if (state === "reset") {
+        log("hub trigger: reset picked", { wheelId, discId });
+        await resetPicked(wheelId);
+        return;
+    }
+    const spinnable = spinnableItems(disc.meta);
+    if (state === "disabled" || spinnable.length < MIN_ITEMS) {
+        log("spin ignored: too few items", { min: MIN_ITEMS, spinnable: spinnable.length });
         return;
     }
     if (disc.groupId) {
@@ -413,14 +485,16 @@ export async function spinFromClick(trigger: SpinTrigger): Promise<void> {
     let previewing = false;
     try {
         log("spin trigger: scene:click on preview hub", { wheelId, discId, cursor: trigger.cursor });
+        quietSelection();
         await call({ type: "command:scene:clear-selection" });
 
-        const count = disc.meta.items.length;
+        const count = spinnable.length;
         const startDeg = disc.meta.rotationDeg;
         const target = pickSpin(count, startDeg, cryptoRandom);
+        const winner = spinnable[target.winnerIndex];
         log("spin target", {
             winnerIndex: target.winnerIndex,
-            winner: disc.meta.items[target.winnerIndex]?.name,
+            winner: winner.name,
             offset: Number(target.offset.toFixed(4)),
             turns: target.turns,
             startDeg: Number(startDeg.toFixed(2)),
@@ -429,16 +503,19 @@ export async function spinFromClick(trigger: SpinTrigger): Promise<void> {
         });
         const stack = stackOf(disc, discs);
 
-        // The image that turns must already have its labels flipped for the final rotation, and
-        // a result image cannot turn (it is taller than the wheel). Otherwise the disc turns as is.
+        // The image that turns shows only the spinnable items (the previous winner leaves here when
+        // picked names are removed), has its labels flipped for the final rotation, and is never a
+        // result image (those are taller than the wheel). When the disc already is that, it turns as is.
         const needsSpinImage =
-            disc.meta.winnerIndex !== null || flipsDiffer(count, disc.meta.labelDeg ?? startDeg, target.finalDeg);
+            disc.meta.winnerId !== null ||
+            visibleItems(disc.meta).length !== count ||
+            flipsDiffer(count, disc.meta.labelDeg ?? startDeg, target.finalDeg);
         let turning = disc;
         let leftovers: Disc[] = stack;
         if (needsSpinImage) {
             turning = await addReplacement(disc, {
                 ...disc.meta,
-                winnerIndex: null,
+                winnerId: null,
                 labelDeg: target.finalDeg,
                 version: disc.meta.version + 1,
             });
@@ -474,7 +551,8 @@ export async function spinFromClick(trigger: SpinTrigger): Promise<void> {
             ...turning.meta,
             rotationDeg: target.finalDeg,
             labelDeg: undefined,
-            winnerIndex: target.winnerIndex,
+            winnerId: winner.id,
+            picked: turning.meta.removePicked ? [...turning.meta.picked, winner.id] : turning.meta.picked,
             version: turning.meta.version + 1,
         });
         await sleep(SWAP_SETTLE_MS);
@@ -544,7 +622,7 @@ export async function onDragEnd(): Promise<void> {
     for (const id of hidden) {
         const rect = rects.find((r) => r.drawdyElementId === id)?.rect ?? null;
         if (rect) lastRect.set(id, rect);
-        await releaseHub(id, rect);
+        await releaseHub(id, rect, stateOfDisc(id));
     }
     scheduleRefresh();
 }
@@ -578,7 +656,7 @@ export async function onDiscUpdated(el: SubscribedDrawdyElement): Promise<void> 
         el.id,
         setTimeout(() => {
             resizeTimers.delete(el.id);
-            void releaseHub(el.id, lastRect.get(el.id) ?? null).then(scheduleRefresh);
+            void releaseHub(el.id, lastRect.get(el.id) ?? null, stateOfDisc(el.id)).then(scheduleRefresh);
         }, RESIZE_SETTLE_MS)
     );
 }
@@ -590,9 +668,10 @@ export async function onDiscUpdated(el: SubscribedDrawdyElement): Promise<void> 
 export async function onDiscRemoved(id: string): Promise<void> {
     const rect = lastRect.get(id);
     const wheelId = wheelOfDisc.get(id);
+    const own = ownRemovals.delete(id);
     lastRect.delete(id);
     await removeHub(id);
-    if (rect && wheelId && wasSelected(id)) {
+    if (!own && rect && wheelId && wasSelected(id)) {
         await clearStackAt(wheelId, rect, null, (await queryBoard()).discs, "delete");
     }
     scheduleRefresh();
@@ -602,6 +681,86 @@ export function onSelection(ids: readonly string[]): void {
     const now = Date.now();
     for (const id of selection) if (!ids.includes(id)) recentlySelected.set(id, now);
     selection = new Set(ids);
+    for (const fn of selectionListeners) fn();
+}
+
+function stateOfDisc(discId: string) {
+    const meta = metaOfDisc.get(discId);
+    return meta ? hubState(meta) : hubStateOf(discId) ?? "spin";
+}
+
+/** The wheelIds of the selected discs, read from the board. */
+export async function selectedWheelIds(): Promise<string[]> {
+    if (selection.size === 0) return [];
+    const { discs } = await queryBoard();
+    return [...new Set(discs.filter((d) => selection.has(d.id)).map((d) => d.meta.wheelId))];
+}
+
+/** The meta of a wheel's top disc, or null when the wheel is not on the board. */
+export async function readWheel(wheelId: string): Promise<DiscMeta | null> {
+    const { discs } = await queryBoard();
+    const group = discs.filter((d) => d.meta.wheelId === wheelId);
+    return group.length > 0 ? topOf(group).meta : null;
+}
+
+// ---------------------------------------------------------------------------
+// Writing list changes
+
+export type WriteResult = "done" | "busy" | "missing";
+
+const sameView = (a: DiscMeta, b: DiscMeta) =>
+    JSON.stringify(visibleItems(a)) === JSON.stringify(visibleItems(b)) &&
+    a.rotationDeg === b.rotationDeg &&
+    a.labelDeg === b.labelDeg &&
+    visibleWinnerIndex(a) === visibleWinnerIndex(b);
+
+/**
+ * Applies `change` to a wheel's meta. When the drawing changes the disc is swapped (same
+ * wheelId, version + 1, same position and size; one add and one remove in history) and
+ * reselected if it was selected; otherwise only the meta is updated (one step).
+ */
+export async function writeWheel(wheelId: string, change: (meta: DiscMeta) => DiscMeta, reason: string): Promise<WriteResult> {
+    if (isBusy(wheelId)) return "busy";
+    writing.add(wheelId);
+    try {
+        const { discs } = await queryBoard();
+        const group = discs.filter((d) => d.meta.wheelId === wheelId);
+        if (group.length === 0) return "missing";
+        const disc = topOf(group);
+        const next: DiscMeta = { ...change(disc.meta), version: disc.meta.version + 1 };
+
+        if (sameView(disc.meta, next)) {
+            log("wheel meta updated", { reason, wheelId, discId: disc.id, version: next.version });
+            await call({
+                type: "command:scene:update-drawdy-elements",
+                req: { updates: [{ drawdyElementId: disc.id, properties: { meta: { [META_KEY]: next } } }] },
+            });
+            metaOfDisc.set(disc.id, next);
+            await rekeyHub(disc.id, disc.id, disc.rect, hubState(next));
+            return "done";
+        }
+
+        const wasSelected = selection.has(disc.id);
+        quietSelection();
+        const replacement = await addReplacement(disc, next);
+        await sleep(SWAP_SETTLE_MS);
+        quietSelection();
+        await removeElements([disc, ...stackOf(disc, discs)]);
+        if (wasSelected) {
+            quietSelection();
+            await call({ type: "command:scene:set-selection", req: { drawdyElementIds: [replacement.id] } });
+        }
+        log("wheel swapped", { reason, wheelId, from: disc.id, to: replacement.id, version: next.version });
+        return "done";
+    } finally {
+        writing.delete(wheelId);
+        scheduleRefresh();
+    }
+}
+
+/** Clears the picked list and any shown result in one write. */
+export function resetPicked(wheelId: string): Promise<WriteResult> {
+    return writeWheel(wheelId, (m) => ({ ...m, picked: [], winnerId: null, labelDeg: undefined }), "reset picked");
 }
 
 function wasSelected(id: string): boolean {

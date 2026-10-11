@@ -2,10 +2,10 @@ import type { DriverModule } from "@drawdy/driver-protocol";
 import { loadFonts } from "./fonts";
 import { UnauthorizedError, call, initHost, setStyling, token } from "./host";
 import { discForHubElement } from "./hubs";
+import { redrawHubs } from "./hubs";
 import { error, warn } from "./log";
-import type { WheelItem } from "./model";
+import { WEBVIEW_ID, initPanel, onPanelMessage, onThemeChanged, showNotice, togglePanel } from "./panel";
 import {
-    addWheel,
     discsAppeared,
     isWheelElement,
     onDiscRemoved,
@@ -25,13 +25,7 @@ const DENIED_MESSAGE = "Draw Lots needs access to the board. Re-enable it in the
 
 const ACTION_BUTTON_SVG = `<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="13" r="8.5"/><path d="M12 13V4.5M12 13l7.4 4.25M12 13l-7.4 4.25"/><circle cx="12" cy="13" r="2" fill="currentColor"/><path d="M10.5 1.5h3L12 4z" fill="currentColor"/></svg>`;
 
-const SPIKE_NAMES = ["Ada", "Grace", "Linus", "Margaret", "Alan"];
-
 let sceneReady: Promise<boolean> | null = null;
-
-function spikeItems(): WheelItem[] {
-    return SPIKE_NAMES.map((name, i) => ({ id: `spike-${i}`, name }));
-}
 
 async function notice(text: string): Promise<void> {
     const size = await call({ type: "command:dom:window-size" });
@@ -69,6 +63,7 @@ async function notice(text: string): Promise<void> {
 
 async function reportError(err: unknown): Promise<void> {
     if (err instanceof UnauthorizedError) {
+        showNotice(DENIED_MESSAGE);
         await notice(DENIED_MESSAGE);
         return;
     }
@@ -90,7 +85,10 @@ function ensureScene(): Promise<boolean> {
         ]);
         const failed = subs.find((s) => s.res.error)?.res.error;
         if (failed) {
-            if (failed.type === "unauthorized") await notice(DENIED_MESSAGE);
+            if (failed.type === "unauthorized") {
+                showNotice(DENIED_MESSAGE);
+                await notice(DENIED_MESSAGE);
+            }
             else error("subscribe failed", failed);
             return false;
         }
@@ -123,6 +121,8 @@ export const activate: DriverModule["activate"] = async (ctx) => {
     }
     await call({ type: "subscription:dom:element-clicked", req: { domElementId: ACTION_BUTTON_ID } });
     await call({ type: "subscription:dom:theme-changed" });
+    await call({ type: "subscription:webview:message", req: { webviewDomId: WEBVIEW_ID } });
+    initPanel();
 
     await ensureScene();
 };
@@ -131,12 +131,19 @@ export const onEvent: DriverModule["onEvent"] = async (event) => {
     switch (event.type) {
         case "subscription:dom:element-clicked": {
             if (event.body.domElementId !== ACTION_BUTTON_ID) return;
-            if (!(await ensureScene())) return;
-            await addWheel(spikeItems()).catch(reportError);
+            await togglePanel().catch(reportError);
+            void ensureScene();
             return;
         }
         case "subscription:dom:theme-changed": {
             setStyling(event.body.styling);
+            onThemeChanged();
+            await redrawHubs().catch(reportError);
+            return;
+        }
+        case "subscription:webview:message": {
+            if (event.body.webviewDomId !== WEBVIEW_ID) return;
+            await onPanelMessage(event.body.message).catch(reportError);
             return;
         }
         case "subscription:scene:click": {

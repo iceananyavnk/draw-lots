@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.5
+
+- Reset wheel clears the last result, even with Remove picked names off.
+
 ## 0.1.4
 
 - Sound is now off until you turn it on.

@@ -62,7 +62,13 @@ svg { display: block; }
 .switch[aria-checked="true"] .track { background: var(--dd-accent, #C5F601); }
 .switch[aria-checked="true"] .thumb { transform: translateX(12px); }
 
-.list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; overflow-y: auto; flex: 1; min-height: 80px; }
+.listwrap { position: relative; flex: 1; min-height: 80px; display: flex; flex-direction: column; }
+.list { list-style: none; margin: 0; padding: var(--dd-space-4, 4px) 0 0; display: flex; flex-direction: column; gap: 2px; overflow-y: auto; flex: 1; min-height: 0; }
+/* Edge fades in the panel colour, shown only while there is more to scroll in that direction. */
+.listwrap::before, .listwrap::after { content: ""; position: absolute; left: 0; right: 0; height: 14px; pointer-events: none; opacity: 0; transition: opacity 120ms; z-index: 1; }
+.listwrap::before { top: 0; background: linear-gradient(var(--dd-surface-panel, #fff), transparent); }
+.listwrap::after { bottom: 0; background: linear-gradient(transparent, var(--dd-surface-panel, #fff)); }
+.listwrap.more-above::before, .listwrap.more-below::after { opacity: 1; }
 .list li { display: flex; align-items: center; gap: var(--dd-space-6, 6px); padding: var(--dd-space-4, 4px); border-radius: var(--dd-radius-md, 6px); }
 .list li:hover { background: var(--dd-interaction-hover, rgba(0,0,0,.04)); }
 .mark { display: inline-block; width: 14px; height: 14px; margin-left: var(--dd-space-4, 4px); vertical-align: -2px; color: var(--dd-text-tertiary, rgba(0,0,0,.5)); }
@@ -130,7 +136,7 @@ li.picked .nm { color: var(--dd-text-tertiary, rgba(0,0,0,.5)); }
     <div class="picks" id="picks" hidden>
         <button class="switch" id="removePicked" role="switch" aria-checked="true"><span class="track"><span class="thumb"></span></span>Remove picked names</button>
     </div>
-    <ul class="list" id="list" aria-label="Items"></ul>
+    <div class="listwrap" id="listWrap"><ul class="list" id="list" aria-label="Items"></ul></div>
     <p class="hint" id="imageHint" hidden>Images show on the wheel with 10 items or fewer.</p>
     <input type="file" id="file" accept="image/*" hidden />
     <div class="menu" id="imageMenu" role="menu" hidden>
@@ -138,7 +144,7 @@ li.picked .nm { color: var(--dd-text-tertiary, rgba(0,0,0,.5)); }
         <button role="menuitem" id="menuRemove">Remove image</button>
     </div>
     <div class="listfoot" id="listFoot">
-        <button class="textbtn" id="resetPicked" hidden>Reset picks</button>
+        <button class="textbtn" id="resetWheel" hidden>Reset wheel</button>
         <span class="vdivider" id="resetDivider" aria-hidden="true" hidden></span>
         <button class="textbtn" id="clearAll">Clear all</button>
     </div>
@@ -208,9 +214,9 @@ li.picked .nm { color: var(--dd-text-tertiary, rgba(0,0,0,.5)); }
 
         $("picks").hidden = !edit;
         $("removePicked").setAttribute("aria-checked", String(!!state.removePicked));
-        var anyPicked = edit && state.picked && state.picked.length > 0;
-        $("resetPicked").hidden = !anyPicked;
-        $("resetDivider").hidden = !anyPicked;
+        var canReset = edit && ((state.picked && state.picked.length > 0) || !!state.hasResult);
+        $("resetWheel").hidden = !canReset;
+        $("resetDivider").hidden = !canReset;
 
         list.innerHTML = "";
         items.forEach(function (it) {
@@ -286,6 +292,7 @@ li.picked .nm { color: var(--dd-text-tertiary, rgba(0,0,0,.5)); }
         $("notice").textContent = state.notice || "";
         restoreFocus(key);
         requestMissingImages();
+        updateFades();
     }
 
     // ---- Images: decode, centre-crop, resize and encode in the panel, with browser APIs only. ----
@@ -498,7 +505,15 @@ li.picked .nm { color: var(--dd-text-tertiary, rgba(0,0,0,.5)); }
     $("removePicked").addEventListener("click", function () {
         send({ type: "setRemovePicked", value: !(state && state.removePicked) });
     });
-    $("resetPicked").addEventListener("click", function () { send({ type: "resetPicked" }); });
+    $("resetWheel").addEventListener("click", function () { send({ type: "resetWheel" }); });
+
+    function updateFades() {
+        var wrap = $("listWrap");
+        wrap.classList.toggle("more-above", list.scrollTop > 1);
+        wrap.classList.toggle("more-below", list.scrollTop + list.clientHeight < list.scrollHeight - 1);
+    }
+    list.addEventListener("scroll", updateFades, { passive: true });
+    window.addEventListener("resize", updateFades);
 
     // ---- Sound: synthesized with Web Audio, as in the prototype. No audio files. ----
     // "muted" is the setting (sound off by default). The speaker shows "on" only when the setting is on

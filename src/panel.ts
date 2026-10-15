@@ -36,6 +36,8 @@ type PanelState = {
     visibleCount: number;
     imageLimit: number;
     picked: string[];
+    /** The bound wheel shows a result (dimmed wedges and the pill). */
+    hasResult: boolean;
     removePicked: boolean;
     status: "idle" | "pending";
     max: number;
@@ -52,7 +54,7 @@ type PanelMessage =
     | { type: "remove"; id: string }
     | { type: "clear" }
     | { type: "setRemovePicked"; value: boolean }
-    | { type: "resetPicked" }
+    | { type: "resetWheel" }
     | { type: "setImage"; id: string; image: string }
     | { type: "removeImage"; id: string };
 
@@ -191,6 +193,7 @@ function pushState(): void {
         visibleCount: visibleCount(items),
         imageLimit: IMAGE_ITEM_LIMIT,
         picked: meta?.picked ?? [],
+        hasResult: (meta?.winnerId ?? null) !== null,
         removePicked: pendingRemovePicked() ?? meta?.removePicked ?? true,
         status: working !== null || queued.length > 0 || flushing ? "pending" : "idle",
         max: MAX_ITEMS,
@@ -445,7 +448,8 @@ export async function onPanelMessage(raw: unknown): Promise<void> {
             lastRemovePicked = message.value;
             queueChange((meta) => ({ ...meta, removePicked: message.value }));
             return;
-        case "resetPicked":
+        case "resetWheel":
+            // Back to rest at the current rotation, with nothing picked, in one write.
             if (mode !== "edit") return;
             queueChange((meta) => ({ ...meta, picked: [], winnerId: null, labelDeg: undefined }));
             return;

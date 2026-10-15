@@ -130,7 +130,8 @@ export async function openPanel(): Promise<void> {
 async function sendFullState(): Promise<void> {
     sentImages = new Set();
     onThemeChanged();
-    post({ type: "sound", muted: muted ?? false });
+    // Sound is off until the user turns it on.
+    post({ type: "sound", muted: muted ?? true });
     pushState();
 }
 

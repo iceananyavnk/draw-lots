@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.4
+
+- Sound is now off until you turn it on.
+- Tidier panel header.
+
 ## 0.1.3
 
 - The panel now opens on the wheel that's already on your board.

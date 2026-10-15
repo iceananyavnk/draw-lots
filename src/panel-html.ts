@@ -26,7 +26,7 @@ svg { display: block; }
 [hidden] { display: none !important; }
 
 .panel { height: 100%; padding: var(--dd-space-16, 16px); display: flex; flex-direction: column; gap: var(--dd-space-12, 12px); }
-.head { display: flex; justify-content: space-between; align-items: baseline; }
+.head { display: flex; justify-content: space-between; align-items: center; }
 .head h1 {
     margin: 0;
     font-size: var(--dd-type-heading-size, 14px);
@@ -92,7 +92,8 @@ li.picked .nm { color: var(--dd-text-tertiary, rgba(0,0,0,.5)); }
 .list li:hover .x, .list li:focus-within .x, .x:focus-visible { opacity: 1; }
 .x:hover { background: var(--dd-interaction-hover, rgba(0,0,0,.04)); color: var(--dd-text-primary, rgba(0,0,0,.95)); }
 @media (hover: none) { .x { opacity: 1; } }
-.empty { color: var(--dd-text-tertiary, rgba(0,0,0,.5)); padding: var(--dd-space-8, 8px) var(--dd-space-4, 4px); }
+.empty { color: var(--dd-text-tertiary, rgba(0,0,0,.5)); padding: var(--dd-space-8, 8px) var(--dd-space-4, 4px); cursor: default; }
+.list li.empty:hover, .list li.empty:focus-within { background: transparent; }
 
 .listfoot { display: flex; justify-content: flex-end; align-items: center; gap: var(--dd-space-6, 6px); }
 .vdivider { width: 1px; height: 12px; background: var(--dd-divider-strong, rgba(0,0,0,.12)); }
@@ -116,7 +117,7 @@ li.picked .nm { color: var(--dd-text-tertiary, rgba(0,0,0,.5)); }
         <h1 id="title">New wheel</h1>
         <div class="headR">
             <span class="count" id="count"></span>
-            <button class="iconbtn" id="soundBtn" aria-pressed="true" title="Mute sounds" aria-label="Mute sounds">
+            <button class="iconbtn" id="soundBtn" aria-pressed="false" title="Turn sounds on" aria-label="Turn sounds on">
                 <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.8 6.2C3.9 6.1 4.9 6.1 5.8 6L8.9 3.3C9.1 3.1 9.4 3.3 9.4 3.6 9.5 6.5 9.5 9.6 9.4 12.4 9.4 12.7 9.1 12.9 8.9 12.7L5.8 10C4.8 9.9 3.8 9.9 2.8 9.8 2.5 9.8 2.4 9.6 2.4 9.3 2.3 8.4 2.4 7.4 2.4 6.6 2.4 6.4 2.6 6.2 2.8 6.2z"/><path class="on" d="M11.3 6.1c.6.6.9 1.2.9 1.9 0 .7-.3 1.3-.8 1.9M12.9 4.4c1 1 1.5 2.2 1.5 3.6 0 1.4-.6 2.6-1.5 3.6"/><path class="off" d="M11.4 6.3c1 1 2 2.1 2.9 3.2M14.2 6.2c-1 1.1-1.9 2.2-2.9 3.4"/></svg>
             </button>
         </div>
@@ -500,15 +501,27 @@ li.picked .nm { color: var(--dd-text-tertiary, rgba(0,0,0,.5)); }
     $("resetPicked").addEventListener("click", function () { send({ type: "resetPicked" }); });
 
     // ---- Sound: synthesized with Web Audio, as in the prototype. No audio files. ----
-    var audio = null, muted = false, voices = [];
+    // "muted" is the setting (sound off by default). The speaker shows "on" only when the setting is on
+    // and the AudioContext is running, i.e. when a spin would actually be heard.
+    var audio = null, muted = true, voices = [];
     var STORED_HINT = "draw-lots:sound-stored";
+    /** Whether audio was still locked when the current pointer gesture began. */
+    var lockedAtPointer = false;
 
-    // The context is created and resumed only by a pointerdown in the panel (browser autoplay rules).
-    document.addEventListener("pointerdown", function () {
+    function audioRunning() { return !!audio && audio.state === "running"; }
+
+    // The context is created and resumed only by a user gesture in the panel (browser autoplay rules).
+    function unlockAudio() {
         if (!audio) {
             try { audio = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { audio = null; }
+            if (audio) audio.onstatechange = updateSoundButton;
         }
-        if (audio && audio.state === "suspended") audio.resume();
+        if (audio && audio.state === "suspended") audio.resume().then(updateSoundButton, function () {});
+        updateSoundButton();
+    }
+    document.addEventListener("pointerdown", function () {
+        lockedAtPointer = !audioRunning();
+        unlockAudio();
     }, true);
 
     function canPlay() { return visible && !!audio && audio.state === "running" && !muted; }
@@ -564,16 +577,30 @@ li.picked .nm { color: var(--dd-text-tertiary, rgba(0,0,0,.5)); }
         sfxLand(base + s.durationMs / 1000);
     }
 
-    function setMuted(value, fromUser) {
-        muted = value;
-        var b = $("soundBtn"), label = muted ? "Turn sounds on" : "Mute sounds";
-        b.setAttribute("aria-pressed", String(!muted));
+    function updateSoundButton() {
+        var on = !muted && audioRunning();
+        var b = $("soundBtn"), label = on ? "Mute sounds" : "Turn sounds on";
+        b.setAttribute("aria-pressed", String(on));
         b.title = label;
         b.setAttribute("aria-label", label);
+    }
+
+    function setMuted(value, fromUser) {
+        muted = value;
         if (muted) silence();
+        updateSoundButton();
         if (fromUser) send({ type: "setMuted", muted: muted });
     }
-    $("soundBtn").addEventListener("click", function () { setMuted(!muted, true); });
+
+    // Muted setting: turn it on. Setting on but audio still locked (the icon shows muted): this click
+    // only unlocks audio, so the icon turns "on" without changing the setting. Otherwise: turn it off.
+    $("soundBtn").addEventListener("click", function () {
+        var wasLocked = lockedAtPointer || !audioRunning();
+        lockedAtPointer = false;
+        unlockAudio();
+        if (muted) setMuted(false, true);
+        else if (!wasLocked) setMuted(true, true);
+    });
 
     var motion = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
     if (motion && motion.addEventListener) {

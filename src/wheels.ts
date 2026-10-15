@@ -756,6 +756,31 @@ export async function selectedWheelIds(): Promise<string[]> {
     return [...new Set(discs.filter((d) => selection.has(d.id)).map((d) => d.meta.wheelId))];
 }
 
+/**
+ * The wheel to bind the panel to when none is bound: the one whose centre is closest to the
+ * viewport centre, preferring wheels whose centre is inside the viewport. Stacked discs count
+ * as one wheel (by wheelId, using the top disc). Null when no wheel is on the board.
+ */
+export async function closestWheelId(): Promise<string | null> {
+    const { discs } = await queryBoard();
+    if (discs.length === 0) return null;
+    const { rect: view } = unwrap(await call({ type: "command:camera:get-viewport-rect" }));
+    const cx = view.x + view.width / 2;
+    const cy = view.y + view.height / 2;
+    const byWheel = new Map<string, Disc[]>();
+    for (const d of discs) byWheel.set(d.meta.wheelId, [...(byWheel.get(d.meta.wheelId) ?? []), d]);
+    let best: { wheelId: string; inside: boolean; distance: number } | null = null;
+    for (const [wheelId, group] of byWheel) {
+        const c = discCenter(topOf(group).rect);
+        const inside = c.x >= view.x && c.x <= view.x + view.width && c.y >= view.y && c.y <= view.y + view.height;
+        const distance = Math.hypot(c.x - cx, c.y - cy);
+        if (!best || (inside && !best.inside) || (inside === best.inside && distance < best.distance)) {
+            best = { wheelId, inside, distance };
+        }
+    }
+    return best?.wheelId ?? null;
+}
+
 /** The meta of a wheel's top disc, or null when the wheel is not on the board. */
 export async function readWheel(wheelId: string): Promise<DiscMeta | null> {
     const { discs } = await queryBoard();

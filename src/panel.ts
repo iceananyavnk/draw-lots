@@ -6,6 +6,7 @@ import { IMAGE_ITEM_LIMIT, MAX_ITEMS, isImageDataUrl, visibleItems, type DiscMet
 import { PANEL_HTML } from "./panel-html";
 import {
     addWheel,
+    closestWheelId,
     isBusy,
     isOwnSelectionChange,
     onBoardChanged,
@@ -231,6 +232,25 @@ async function onSelection(): Promise<void> {
     }
 }
 
+/** Set while autoBind runs, so board refreshes in the meantime do not start another one. */
+let autoBinding = false;
+
+/**
+ * With no wheel bound, binds the panel to the wheel closest to the viewport centre, or shows
+ * "New wheel" when the board has none, so typing never creates a second wheel by accident.
+ */
+async function autoBind(): Promise<void> {
+    if (autoBinding) return;
+    autoBinding = true;
+    try {
+        const wheelId = await closestWheelId().catch(() => null);
+        if (wheelId) log("panel bound to the closest wheel", { wheelId });
+        await setTarget(wheelId ? "edit" : "new", wheelId);
+    } finally {
+        autoBinding = false;
+    }
+}
+
 function onBoard(wheels: WheelView[]): void {
     if (!target) return;
     const view = wheels.find((w) => w.meta.wheelId === target);
@@ -238,7 +258,7 @@ function onBoard(wheels: WheelView[]): void {
         // Every disc of the wheel is gone (deleted, or undone away); a swap always keeps one.
         if (!isBusy(target)) {
             log("panel unbound: wheel left the board", { wheelId: target });
-            void setTarget("new", null);
+            void autoBind().then(sendFullState);
         }
         return;
     }
@@ -370,6 +390,7 @@ export async function onPanelMessage(raw: unknown): Promise<void> {
             if (typeof message.reducedMotion === "boolean") setReducedMotion(message.reducedMotion);
             if (muted === null && message.soundStored) await loadMuted().catch(() => undefined);
             await onSelection();
+            if (!target) await autoBind();
             await sendFullState();
             return;
         case "needImages": {

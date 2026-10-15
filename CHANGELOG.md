@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.3
+
+- The panel now opens on the wheel that's already on your board.
+
 ## 0.1.2
 
 - Fixed the panel not reopening, and the list sometimes not showing.

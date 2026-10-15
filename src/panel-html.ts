@@ -158,6 +158,8 @@ li.picked .nm { color: var(--dd-text-tertiary, rgba(0,0,0,.5)); }
     var images = {};
     /** Row messages ("Couldn't use this image.") and rows with an image being processed, by item id. */
     var rowErrors = {}, processing = {};
+    /** Image keys already asked for, so a missing image is requested once until it arrives. */
+    var requestedImages = {};
 
     var state = null;
     var pending = null;
@@ -178,8 +180,19 @@ li.picked .nm { color: var(--dd-text-tertiary, rgba(0,0,0,.5)); }
         else if (!input.disabled) input.focus();
     }
 
+    var missingImages = [];
+
+    function requestMissingImages() {
+        var keys = missingImages.filter(function (k) { return !requestedImages[k]; });
+        missingImages = [];
+        if (keys.length === 0) return;
+        keys.forEach(function (k) { requestedImages[k] = true; });
+        send({ type: "needImages", keys: keys });
+    }
+
     function render() {
         if (!state) return;
+        missingImages = [];
         var key = focusKey();
         var edit = state.mode === "edit";
         var items = state.items, picked = {};
@@ -205,6 +218,7 @@ li.picked .nm { color: var(--dd-text-tertiary, rgba(0,0,0,.5)); }
             if (isPicked) li.className = "picked";
             var slot = document.createElement("button");
             var src = it.imageKey ? images[it.imageKey] : null;
+            if (it.imageKey && !src) missingImages.push(it.imageKey);
             slot.className = "slot" + (src ? " has" : "") + (processing[it.id] ? " busy" : "");
             slot.setAttribute("data-key", "slot-" + it.id);
             if (src) {
@@ -270,6 +284,7 @@ li.picked .nm { color: var(--dd-text-tertiary, rgba(0,0,0,.5)); }
         $("notice").hidden = !state.notice;
         $("notice").textContent = state.notice || "";
         restoreFocus(key);
+        requestMissingImages();
     }
 
     // ---- Images: decode, centre-crop, resize and encode in the panel, with browser APIs only. ----
@@ -496,7 +511,7 @@ li.picked .nm { color: var(--dd-text-tertiary, rgba(0,0,0,.5)); }
         if (audio && audio.state === "suspended") audio.resume();
     }, true);
 
-    function canPlay() { return !!audio && audio.state === "running" && !muted; }
+    function canPlay() { return visible && !!audio && audio.state === "running" && !muted; }
 
     function tone(t, freq, dur, vol, type) {
         var o = audio.createOscillator(), g = audio.createGain();
@@ -576,7 +591,8 @@ li.picked .nm { color: var(--dd-text-tertiary, rgba(0,0,0,.5)); }
         if (msg.type === "theme") {
             $("theme").textContent = ":root{" + msg.css + "}";
         } else if (msg.type === "images") {
-            for (var key in msg.images) images[key] = msg.images[key];
+            for (var key in msg.images) { images[key] = msg.images[key]; delete requestedImages[key]; }
+            if (state && !editing) render();
         } else if (msg.type === "state") {
             // A row whose image changed (here or on another client) drops its old image message.
             (msg.state.items || []).forEach(function (it) {
@@ -589,7 +605,34 @@ li.picked .nm { color: var(--dd-text-tertiary, rgba(0,0,0,.5)); }
             render();
         }
     });
-    send({ type: "ready", reducedMotion: !!(motion && motion.matches), soundStored: storedHint() });
+    // ---- Handshake: "ready" on load and whenever the panel shows again. ----
+    // The host may hide the panel without unloading it. A frame hidden with display: none, or
+    // moved off-screen, stops intersecting the page (its own size does not change), and a hidden
+    // tab hides the document. Coming back from either sends "ready"; the driver answers with the
+    // full state. While hidden, no sound plays.
+    var visible = true, onScreen = true, lastReady = 0;
+    function sendReady() {
+        var now = Date.now();
+        if (now - lastReady < 300) return;
+        lastReady = now;
+        send({ type: "ready", reducedMotion: !!(motion && motion.matches), soundStored: storedHint() });
+    }
+    function onVisibility() {
+        var now = onScreen && !document.hidden;
+        if (now === visible) return;
+        visible = now;
+        if (visible) sendReady();
+        else silence();
+    }
+    if (window.IntersectionObserver) {
+        new IntersectionObserver(function (entries) {
+            onScreen = entries[entries.length - 1].isIntersecting;
+            onVisibility();
+        }).observe(document.documentElement);
+    }
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("pageshow", function (e) { if (e.persisted) sendReady(); });
+    sendReady();
 })();
 </script>
 </body>

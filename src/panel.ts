@@ -43,6 +43,7 @@ type PanelState = {
 
 type PanelMessage =
     | { type: "ready"; reducedMotion?: boolean; soundStored?: boolean }
+    | { type: "needImages"; keys: string[] }
     | { type: "reducedMotion"; value: boolean }
     | { type: "setMuted"; muted: boolean }
     | { type: "add"; names: string[] }
@@ -95,32 +96,41 @@ function themeCss(): string {
     return `color-scheme: ${theme};--dl-switch-off: ${SWITCH_OFF[theme]};${vars}`;
 }
 
-/** True while the panel document is running; nothing is posted to a panel that is not open. */
-let panelAlive = false;
-
+/**
+ * Sends a message to the panel. It is always attempted: the protocol has no signal for
+ * whether the panel is open, and post-message answers posted: false for a panel that does
+ * not exist or is not connected, which is simply ignored. The panel's "ready" handshake
+ * brings it up to date whenever it starts or shows again.
+ */
 function post(message: unknown): void {
-    if (!panelAlive) return;
-    void call({ type: "command:webview:post-message", req: { webviewDomId: WEBVIEW_ID, message } }).then((res) => {
-        if (res.res.value?.posted === false) panelAlive = false;
-    });
+    void call({ type: "command:webview:post-message", req: { webviewDomId: WEBVIEW_ID, message } });
 }
 
 /**
- * Opens the panel, or hides it when it is open. Whether it is open is probed with a
- * post-message, which answers posted: false for a missing webview instead of failing.
+ * Opens the panel. The rail button always calls create, which shows the panel: the
+ * protocol reports no open, closed or hidden state to toggle on, and closing stays with
+ * Drawdy's own close button. create answers created: false for a panel that already exists
+ * (it is shown again, not duplicated or reloaded), so the current state is sent right away
+ * instead of waiting for a "ready" that a kept document would not send.
  */
-export async function togglePanel(): Promise<void> {
-    const probe = await call({ type: "command:webview:post-message", req: { webviewDomId: WEBVIEW_ID, message: { type: "ping" } } });
-    if (probe.res.value?.posted) {
-        panelAlive = false;
-        await call({ type: "command:webview:hide", req: { webviewDomId: WEBVIEW_ID } });
-        return;
-    }
+export async function openPanel(): Promise<void> {
     const created = await call({
         type: "command:webview:create",
         req: { webviewDomId: WEBVIEW_ID, htmlContent: PANEL_HTML.replace("/*__THEME__*/", themeCss()), keepStateWhenClosed: false },
     });
-    if (created.res.error) error("panel could not open", created.res.error);
+    if (created.res.error) {
+        error("panel could not open", created.res.error);
+        return;
+    }
+    if (created.res.value?.created === false) await sendFullState();
+}
+
+/** Everything the panel shows: theme, sound setting, binding, list, picks, toggle and all images. */
+async function sendFullState(): Promise<void> {
+    sentImages = new Set();
+    onThemeChanged();
+    post({ type: "sound", muted: muted ?? false });
+    pushState();
 }
 
 export function onThemeChanged(): void {
@@ -140,17 +150,21 @@ function currentItems(): WheelItem[] {
     return mode === "new" ? [] : working ?? targetMeta?.items ?? [];
 }
 
-/** Image keys this panel instance already has; reset when a new panel document starts. */
+/** Image keys already sent since the last full state; reset by every full state. */
 let sentImages = new Set<string>();
+/** Image data URLs of the rows last sent, by key, so the panel can ask for one again. */
+let imagesByKey = new Map<string, string>();
 
 const imageKey = (image: string) => `${image.length.toString(36)}-${(seedFrom(image) >>> 0).toString(36)}`;
 
 /** Sends the images the panel does not have yet, then the rows refer to them by key. */
 function panelItems(items: WheelItem[]): PanelItem[] {
     const fresh: Record<string, string> = {};
+    imagesByKey = new Map();
     const rows = items.map((it) => {
         if (!it.image) return { id: it.id, name: it.name, imageKey: null };
         const key = imageKey(it.image);
+        imagesByKey.set(key, it.image);
         if (!sentImages.has(key)) {
             fresh[key] = it.image;
             sentImages.add(key);
@@ -352,15 +366,22 @@ export async function onPanelMessage(raw: unknown): Promise<void> {
     const message = raw as PanelMessage;
     switch (message.type) {
         case "ready":
-            panelAlive = true;
-            sentImages = new Set();
-            onThemeChanged();
+            // Sent by the panel whenever it loads or shows again; always answered with the full state.
             if (typeof message.reducedMotion === "boolean") setReducedMotion(message.reducedMotion);
             if (muted === null && message.soundStored) await loadMuted().catch(() => undefined);
-            post({ type: "sound", muted: muted ?? false });
             await onSelection();
-            pushState();
+            await sendFullState();
             return;
+        case "needImages": {
+            // The panel lost images it was sent (e.g. it reloaded): send them again.
+            const images: Record<string, string> = {};
+            for (const key of message.keys) {
+                const image = imagesByKey.get(key);
+                if (image) images[key] = image;
+            }
+            if (Object.keys(images).length > 0) post({ type: "images", images });
+            return;
+        }
         case "reducedMotion":
             setReducedMotion(message.value);
             return;

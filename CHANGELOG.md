@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.2
+
+- Fixed the panel not reopening, and the list sometimes not showing.
+
 ## 0.1.1
 
 - New toolbar icon.

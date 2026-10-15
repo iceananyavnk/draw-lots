@@ -5,7 +5,7 @@ import { discForHubElement } from "./hubs";
 import { redrawHubs } from "./hubs";
 import { error, warn } from "./log";
 import { RAIL_ICON_SVG } from "./rail-icon";
-import { WEBVIEW_ID, initPanel, onPanelMessage, onThemeChanged, showNotice, togglePanel } from "./panel";
+import { WEBVIEW_ID, initPanel, onPanelMessage, onThemeChanged, openPanel, showNotice } from "./panel";
 import {
     discsAppeared,
     isWheelElement,
@@ -137,7 +137,7 @@ export const onEvent: DriverModule["onEvent"] = async (event) => {
     switch (event.type) {
         case "subscription:dom:element-clicked": {
             if (event.body.domElementId !== ACTION_BUTTON_ID) return;
-            await togglePanel().catch(reportError);
+            await openPanel().catch(reportError);
             void ensureScene();
             return;
         }
